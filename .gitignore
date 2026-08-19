@@ -1,0 +1,14 @@
+# MinGW and native build products
+*.a
+*.dll
+*.exe
+*.o
+*.obj
+*.res
+
+# Generated Glide build files
+glide2x/sst1/glide/src/fxgasm.h
+glide2x/sst1/glide/src/fxinline.h
+glide2x/sst1/lib/*/*.def
+glide2x/sst1/lib/*/*.raw.def
+glide2x/sst1/lib/*/*.tmp.dll
