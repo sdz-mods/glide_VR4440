@@ -1409,7 +1409,7 @@ GR_ENTRY(grSstConfigPipeline, void, (GrChipID_t chip, GrSstRegister reg, FxU32 v
   case GR_TMU0:
   case GR_TMU1:
   case GR_TMU2:
-    hw = SST_TMU(hw,chip);
+    hw = sst96GetTmuRegPtr(hw,chip);
     /* FALL THRU */
   case GR_FBI:
     GR_SET( ((FxU32 *)hw)[reg], value );
@@ -1428,3 +1428,263 @@ GR_ENTRY(grSstConfigPipeline, void, (GrChipID_t chip, GrSstRegister reg, FxU32 v
   PACKER_WORKAROUND;
   GR_END();
 } /* grSstConfigPipeline */
+
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+GR_ENTRY(sst96DebugDumpTmuRegs, void, (const char *tag))
+{
+  FILE *f;
+  int tmu;
+
+  GR_BEGIN_NOFIFOCHECK("sst96DebugDumpTmuRegs", 83);
+
+  f = fopen("rush_regs.log", "a");
+  if (f == NULL) {
+    GR_END();
+  }
+
+  fprintf(f, "%s num_tmu=%d fbzColorPath=0x%08lx tmuMask=0x%08lx paramIndex=0x%08lx stwhints=0x%08lx\n",
+          (tag != NULL) ? tag : "(null)",
+          gc->num_tmu,
+          (unsigned long)gc->state.fbi_config.fbzColorPath,
+          (unsigned long)gc->state.tmuMask,
+          (unsigned long)gc->state.paramIndex,
+          (unsigned long)gc->state.paramHints);
+
+  fprintf(f, "  gwCommand=0x%08lx gwHeaders=%08lx,%08lx,%08lx,%08lx\n",
+          (unsigned long)gc->hwDep.sst96Dep.gwCommand,
+          (unsigned long)gc->hwDep.sst96Dep.gwHeaders[0],
+          (unsigned long)gc->hwDep.sst96Dep.gwHeaders[1],
+          (unsigned long)gc->hwDep.sst96Dep.gwHeaders[2],
+          (unsigned long)gc->hwDep.sst96Dep.gwHeaders[3]);
+
+  for (tmu = 0; tmu < gc->num_tmu; tmu++) {
+    volatile Sstregs *tmuHw = sst96GetTmuRegPtr(hw, tmu);
+
+    fprintf(f,
+            "  tmu%d shadow texMode=0x%08lx tLOD=0x%08lx base=0x%08lx mmMode=%d lod=%d/%d evenOdd=0x%08lx total=0x%08lx\n",
+            tmu,
+            (unsigned long)gc->state.tmu_config[tmu].textureMode,
+            (unsigned long)gc->state.tmu_config[tmu].tLOD,
+            (unsigned long)gc->state.tmu_config[tmu].texBaseAddr,
+            gc->state.tmu_config[tmu].mmMode,
+            gc->state.tmu_config[tmu].smallLod,
+            gc->state.tmu_config[tmu].largeLod,
+            (unsigned long)gc->state.tmu_config[tmu].evenOdd,
+            (unsigned long)gc->tmu_state[tmu].total_mem);
+
+    fprintf(f,
+            "  tmu%d hwptr=0x%08lx texMode=0x%08lx tLOD=0x%08lx base=0x%08lx init0=0x%08lx init1=0x%08lx\n",
+            tmu,
+            (unsigned long)tmuHw,
+            (unsigned long)tmuHw->textureMode,
+            (unsigned long)tmuHw->tLOD,
+            (unsigned long)tmuHw->texBaseAddr,
+            (unsigned long)tmuHw->trexInit0,
+            (unsigned long)tmuHw->trexInit1);
+  }
+
+  fclose(f);
+  GR_END();
+} /* sst96DebugDumpTmuRegs */
+
+GR_ENTRY(sst96DebugDirectTmuTriangle, void, (int tmu))
+{
+  volatile Sstregs *tmuHw;
+  int i;
+
+  GR_BEGIN("sst96DebugDirectTmuTriangle", 83, 80);
+  if (tmu < 0 || tmu >= gc->num_tmu) {
+    GR_END();
+  }
+
+  tmuHw = sst96GetTmuRegPtr(hw, tmu);
+
+  PACKER_WORKAROUND;
+  GR_SET(hw->fbzMode, SST_RGBWRMASK | SST_DRAWBUFFER_BACK);
+  GR_SET(hw->fbzColorPath, SST_RGBSEL_TREXOUT | SST_CC_PASS | SST_ENTEXTUREMAP);
+
+  GR_SET(tmuHw->texBaseAddr, gc->state.tmu_config[tmu].texBaseAddr);
+  GR_SET(tmuHw->textureMode, gc->state.tmu_config[tmu].textureMode);
+  GR_SET(tmuHw->tLOD, gc->state.tmu_config[tmu].tLOD);
+
+  GR_SETF(hw->FvA.x, 220.0f);
+  GR_SETF(hw->FvA.y, 140.0f);
+  GR_SETF(hw->FvB.x, 420.0f);
+  GR_SETF(hw->FvB.y, 140.0f);
+  GR_SETF(hw->FvC.x, 320.0f);
+  GR_SETF(hw->FvC.y, 340.0f);
+
+  GR_SETF(tmuHw->Fs, 0.0f);
+  GR_SETF(tmuHw->Fdsdx, 1.0f);
+  GR_SETF(tmuHw->Fdsdy, 0.0f);
+  GR_SETF(tmuHw->Ft, 0.0f);
+  GR_SETF(tmuHw->Fdtdx, 0.0f);
+  GR_SETF(tmuHw->Fdtdy, 1.0f);
+  GR_SETF(tmuHw->Fw, 1.0f);
+  GR_SETF(tmuHw->Fdwdx, 0.0f);
+  GR_SETF(tmuHw->Fdwdy, 0.0f);
+
+  for (i = 0; i < tmu; i++) {
+    volatile Sstregs *downstream = sst96GetTmuRegPtr(hw, i);
+    GR_SET(downstream->textureMode, SST_TC_PASS | SST_TCA_PASS);
+  }
+
+  GR_SETF(hw->FtriangleCMD, 1.0f);
+  PACKER_WORKAROUND;
+  GR_END();
+} /* sst96DebugDirectTmuTriangle */
+
+GR_ENTRY(sst96DebugDirectDualTmuTriangle, void, (void))
+{
+  volatile Sstregs *tmu0Hw;
+  volatile Sstregs *tmu1Hw;
+
+  GR_BEGIN("sst96DebugDirectDualTmuTriangle", 83, 160);
+  if (gc->num_tmu < 2) {
+    GR_END();
+  }
+
+  tmu0Hw = sst96GetTmuRegPtr(hw, GR_TMU0);
+  tmu1Hw = sst96GetTmuRegPtr(hw, GR_TMU1);
+
+  PACKER_WORKAROUND;
+  GR_SET(hw->fbzMode, SST_RGBWRMASK | SST_DRAWBUFFER_BACK);
+  GR_SET(hw->fbzColorPath, SST_RGBSEL_TREXOUT | SST_CC_PASS | SST_ENTEXTUREMAP);
+
+  GR_SET(tmu0Hw->texBaseAddr, gc->state.tmu_config[GR_TMU0].texBaseAddr);
+  GR_SET(tmu0Hw->textureMode, gc->state.tmu_config[GR_TMU0].textureMode);
+  GR_SET(tmu0Hw->tLOD, gc->state.tmu_config[GR_TMU0].tLOD);
+  GR_SET(tmu1Hw->texBaseAddr, gc->state.tmu_config[GR_TMU1].texBaseAddr);
+  GR_SET(tmu1Hw->textureMode, gc->state.tmu_config[GR_TMU1].textureMode);
+  GR_SET(tmu1Hw->tLOD, gc->state.tmu_config[GR_TMU1].tLOD);
+
+  GR_SETF(hw->FvA.x, 220.0f);
+  GR_SETF(hw->FvA.y, 140.0f);
+  GR_SETF(hw->FvB.x, 420.0f);
+  GR_SETF(hw->FvB.y, 140.0f);
+  GR_SETF(hw->FvC.x, 320.0f);
+  GR_SETF(hw->FvC.y, 340.0f);
+
+  GR_SETF(tmu0Hw->Fs, 0.0f);
+  GR_SETF(tmu0Hw->Fdsdx, 1.0f);
+  GR_SETF(tmu0Hw->Fdsdy, 0.0f);
+  GR_SETF(tmu0Hw->Ft, 0.0f);
+  GR_SETF(tmu0Hw->Fdtdx, 0.0f);
+  GR_SETF(tmu0Hw->Fdtdy, 1.0f);
+  GR_SETF(tmu0Hw->Fw, 1.0f);
+  GR_SETF(tmu0Hw->Fdwdx, 0.0f);
+  GR_SETF(tmu0Hw->Fdwdy, 0.0f);
+
+  GR_SETF(tmu1Hw->Fs, 0.0f);
+  GR_SETF(tmu1Hw->Fdsdx, 1.0f);
+  GR_SETF(tmu1Hw->Fdsdy, 0.0f);
+  GR_SETF(tmu1Hw->Ft, 0.0f);
+  GR_SETF(tmu1Hw->Fdtdx, 0.0f);
+  GR_SETF(tmu1Hw->Fdtdy, 1.0f);
+  GR_SETF(tmu1Hw->Fw, 1.0f);
+  GR_SETF(tmu1Hw->Fdwdx, 0.0f);
+  GR_SETF(tmu1Hw->Fdwdy, 0.0f);
+
+  GR_SETF(hw->FtriangleCMD, 1.0f);
+  PACKER_WORKAROUND;
+  GR_END();
+} /* sst96DebugDirectDualTmuTriangle */
+
+GR_ENTRY(sst96DebugDirectDualTmu0ModeTriangle, void, (FxU32 combineMode))
+{
+  volatile Sstregs *tmu0Hw;
+  volatile Sstregs *tmu1Hw;
+  FxU32 tmu0Mode;
+  FxU32 tmu1Mode;
+
+  GR_BEGIN("sst96DebugDirectDualTmu0ModeTriangle", 83, 160);
+  if (gc->num_tmu < 2) {
+    GR_END();
+  }
+
+  tmu0Hw = sst96GetTmuRegPtr(hw, GR_TMU0);
+  tmu1Hw = sst96GetTmuRegPtr(hw, GR_TMU1);
+
+  tmu0Mode = gc->state.tmu_config[GR_TMU0].textureMode &
+             ~(SST_TCOMBINE | SST_TACOMBINE);
+  tmu1Mode = gc->state.tmu_config[GR_TMU1].textureMode;
+
+  switch (combineMode) {
+  case 0:
+    tmu0Mode |= SST_TC_PASS | SST_TCA_PASS;
+    break;
+  case 1:
+    tmu0Mode |= SST_TC_REPLACE | SST_TCA_REPLACE;
+    break;
+  case 2:
+    tmu0Mode |= SST_TC_MULT | SST_TCA_MULT;
+    break;
+  case 3:
+    tmu0Mode |= SST_TC_ADD | SST_TCA_ADD;
+    break;
+  case 4:
+    tmu0Mode |= SST_TC_ZERO | SST_TCA_ZERO;
+    break;
+  case 5:
+    tmu0Mode |= SST_TC_ONE | SST_TCA_ONE;
+    break;
+  default:
+    tmu0Mode |= SST_TC_MULT | SST_TCA_MULT;
+    break;
+  }
+
+  {
+    FILE *f = fopen("rush_regs.log", "a");
+    if (f != NULL) {
+      fprintf(f,
+              "sst96DebugDirectDualTmu0ModeTriangle mode=%lu tmu0Mode=0x%08lx tmu1Mode=0x%08lx\n",
+              (unsigned long)combineMode,
+              (unsigned long)tmu0Mode,
+              (unsigned long)tmu1Mode);
+      fclose(f);
+    }
+  }
+
+  PACKER_WORKAROUND;
+  GR_SET(hw->fbzMode, SST_RGBWRMASK | SST_DRAWBUFFER_BACK);
+  GR_SET(hw->fbzColorPath, SST_RGBSEL_TREXOUT | SST_CC_PASS | SST_ENTEXTUREMAP);
+
+  GR_SET(tmu0Hw->texBaseAddr, gc->state.tmu_config[GR_TMU0].texBaseAddr);
+  GR_SET(tmu0Hw->textureMode, tmu0Mode);
+  GR_SET(tmu0Hw->tLOD, gc->state.tmu_config[GR_TMU0].tLOD);
+  GR_SET(tmu1Hw->texBaseAddr, gc->state.tmu_config[GR_TMU1].texBaseAddr);
+  GR_SET(tmu1Hw->textureMode, tmu1Mode);
+  GR_SET(tmu1Hw->tLOD, gc->state.tmu_config[GR_TMU1].tLOD);
+
+  GR_SETF(hw->FvA.x, 220.0f);
+  GR_SETF(hw->FvA.y, 140.0f);
+  GR_SETF(hw->FvB.x, 420.0f);
+  GR_SETF(hw->FvB.y, 140.0f);
+  GR_SETF(hw->FvC.x, 320.0f);
+  GR_SETF(hw->FvC.y, 340.0f);
+
+  GR_SETF(tmu0Hw->Fs, 0.0f);
+  GR_SETF(tmu0Hw->Fdsdx, 1.0f);
+  GR_SETF(tmu0Hw->Fdsdy, 0.0f);
+  GR_SETF(tmu0Hw->Ft, 0.0f);
+  GR_SETF(tmu0Hw->Fdtdx, 0.0f);
+  GR_SETF(tmu0Hw->Fdtdy, 1.0f);
+  GR_SETF(tmu0Hw->Fw, 1.0f);
+  GR_SETF(tmu0Hw->Fdwdx, 0.0f);
+  GR_SETF(tmu0Hw->Fdwdy, 0.0f);
+
+  GR_SETF(tmu1Hw->Fs, 0.0f);
+  GR_SETF(tmu1Hw->Fdsdx, 1.0f);
+  GR_SETF(tmu1Hw->Fdsdy, 0.0f);
+  GR_SETF(tmu1Hw->Ft, 0.0f);
+  GR_SETF(tmu1Hw->Fdtdx, 0.0f);
+  GR_SETF(tmu1Hw->Fdtdy, 1.0f);
+  GR_SETF(tmu1Hw->Fw, 1.0f);
+  GR_SETF(tmu1Hw->Fdwdx, 0.0f);
+  GR_SETF(tmu1Hw->Fdwdy, 0.0f);
+
+  GR_SETF(hw->FtriangleCMD, 1.0f);
+  PACKER_WORKAROUND;
+  GR_END();
+} /* sst96DebugDirectDualTmu0ModeTriangle */
+#endif

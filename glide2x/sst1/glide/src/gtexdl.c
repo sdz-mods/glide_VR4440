@@ -110,7 +110,7 @@ GR_DDFUNC(_grTexDownloadNccTable, void, ( GrChipID_t tmu, FxU32 which, const GuN
   if (gc->tmu_state[tmu].ncc_table[which] != table ) {
     GR_SET_EXPECTED_SIZE(48+2*PACKER_WORKAROUND_SIZE);
     PACKER_WORKAROUND;
-    hw = SST_TMU(hw,tmu);
+    hw = sst96GetTmuRegPtr(hw,tmu);
     hwNCC = which == 0 ? hw->nccTable0 : hw->nccTable1;
 
     for ( i = 0; i < 12; i++ )
@@ -203,6 +203,11 @@ GR_ENTRY(grTexDownloadMipMapLevelPartial, void, ( GrChipID_t tmu, FxU32 startAdd
   FxI32   sh, bytesPerTexel;
   FxU32 max_s, s, width, tex_address, tmu_baseaddress;
   FxU32 tLod, texMode, baseAddress,size;
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+  Sstregs *baseHw;
+  FxBool useLegacyTexdl =
+    (tmu == GR_TMU1) && sst96EnvEnabled("SST96_TMU1_LEGACY_TEXDL");
+#endif
 
   GR_BEGIN_NOFIFOCHECK("grTexDownloadMipMapLevelPartial",89);
   GDBG_INFO_MORE((gc->myLevel,"(%d,0x%x, %d,%d,%d, %d,%d 0x%x, %d,%d)\n",
@@ -252,7 +257,7 @@ GR_ENTRY(grTexDownloadMipMapLevelPartial, void, ( GrChipID_t tmu, FxU32 startAdd
   /*------------------------------------------------------------
     Compute Base Address Given Start Address Offset
     ------------------------------------------------------------*/
-  baseAddress = _grTexCalcBaseAddress( startAddress,
+  baseAddress = _grTexCalcBaseAddress( sst96ApplyTmuAddressBias(tmu, startAddress),
                                        largeLod, 
                                        aspectRatio,
                                        format,
@@ -263,7 +268,10 @@ GR_ENTRY(grTexDownloadMipMapLevelPartial, void, ( GrChipID_t tmu, FxU32 startAdd
     Compute Physical Write Pointer
     ------------------------------------------------------------*/
   tmu_baseaddress = (FxU32)gc->tex_ptr;
-  tmu_baseaddress += (((FxU32)tmu)<<21) + (((FxU32)thisLod)<<17);
+  tmu_baseaddress += (((FxU32)thisLod)<<17);
+#if !(GLIDE_PLATFORM & GLIDE_HW_SST96)
+    tmu_baseaddress += (((FxU32)tmu)<<21);
+#endif
   
   /*------------------------------------------------------------
     Compute pertinant contents of tLOD and texMode registers 
@@ -282,13 +290,23 @@ GR_ENTRY(grTexDownloadMipMapLevelPartial, void, ( GrChipID_t tmu, FxU32 startAdd
   /* and also 4xN level for 8-bit textures (or 4x32x8bpp) */
   /* Also note that each texture write requires 10 actual fifo entry bytes */
   /* but since we are counting bytes/2 we multiply by 5 */
-  GR_SET_EXPECTED_SIZE(3*4 + 2*PACKER_WORKAROUND_SIZE + 32*5);
+  GR_SET_EXPECTED_SIZE((3 +
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+                        1 +
+#else
+                        0 +
+#endif
+                        0)*4 + 2*PACKER_WORKAROUND_SIZE + 32*5);
 
   /*------------------------------------------------------------
     Update TLOD, texMode, baseAddress
     ------------------------------------------------------------*/
   PACKER_WORKAROUND;
-  hw = SST_TMU(hw,tmu);
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+  baseHw = hw;
+  GR_SET(baseHw->texChipSel, (FxU32)tmu);
+#endif
+  hw = sst96GetTmuRegPtr(hw,tmu);
   GR_SET( hw->texBaseAddr , baseAddress );
   GR_SET( hw->textureMode , texMode );
   GR_SET( hw->tLOD , tLod );
@@ -442,41 +460,59 @@ GR_ENTRY(grTexDownloadMipMapLevelPartial, void, ( GrChipID_t tmu, FxU32 startAdd
 
     default:                        /* All other textures */
 #if (GLIDE_PLATFORM & GLIDE_HW_SST96)
-      for ( ; t <= max_t; t++ ) {
-        FxU32 t0, t1;
-        FxU32 j;
+      if (!useLegacyTexdl) {
+        for ( ; t <= max_t; t++ ) {
+          FxU32 t0, t1;
+          FxU32 j;
 
-        GR_CHECK_SIZE_SLOPPY();
-        GR_SET_EXPECTED_SIZE((max_s + (max_s >> 4) + 2) << 2);
-        tex_address = tmu_baseaddress + ( t << 9 );
-        if (max_s >= DW_PER_GWP) {              /* can use maximum GWP(s) */
-          for (s=0; s<max_s; s+=DW_PER_GWP ) {
+          GR_CHECK_SIZE_SLOPPY();
+          GR_SET_EXPECTED_SIZE((max_s + (max_s >> 4) + 2) << 2);
+          tex_address = tmu_baseaddress + ( t << 9 );
+          if (max_s >= DW_PER_GWP) {              /* can use maximum GWP(s) */
+            for (s=0; s<max_s; s+=DW_PER_GWP ) {
 
-            GWH_BEGIN_TEXDL_PACKET(0xffffffff, tex_address);
+              GWH_BEGIN_TEXDL_PACKET(0xffffffff, tex_address);
+              /* Loop unrolled to keep GWP happy */
+              for (j=0; j<16; j++) {
+                t0 = * (const FxU32 *) (src16 + (j << 2) );
+                t1 = * (const FxU32 *) (src16 + (j << 2) + 2);
+                GR_SET_GW(t0);
+                GR_SET_GW(t1);
+              }
+              tex_address += BYTES_PER_GWP;
+              src16 += W_PER_GWP;
+            } /* end for s */
+          } else {                        /* partial GWP */
+            FxU32 mask = MASK(max_s);     /* we can assume s is even */
+            GWH_BEGIN_TEXDL_PACKET(mask, tex_address);
             /* Loop unrolled to keep GWP happy */
-            for (j=0; j<16; j++) {
+            for (j=0; j<(max_s>>1); j++) {
               t0 = * (const FxU32 *) (src16 + (j << 2) );
               t1 = * (const FxU32 *) (src16 + (j << 2) + 2);
               GR_SET_GW(t0);
               GR_SET_GW(t1);
             }
-            tex_address += BYTES_PER_GWP;
-            src16 += W_PER_GWP;
-          } /* end for s */
-        } else {                        /* partial GWP */
-          FxU32 mask = MASK(max_s);     /* we can assume s is even */
-          GWH_BEGIN_TEXDL_PACKET(mask, tex_address);
-          /* Loop unrolled to keep GWP happy */
-          for (j=0; j<(max_s>>1); j++) {
-            t0 = * (const FxU32 *) (src16 + (j << 2) );
-            t1 = * (const FxU32 *) (src16 + (j << 2) + 2);
-            GR_SET_GW(t0);
-            GR_SET_GW(t1);
+            tex_address += (max_s << 2);
+            src16 += (max_s << 1);
           }
-          tex_address += (max_s << 2);
-          src16 += (max_s << 1);
+        } /* end for t */
+      } else {
+        for ( ; t <= max_t; t++ ) {
+          GR_CHECK_SIZE_SLOPPY();
+          GR_SET_EXPECTED_SIZE(max_s*5);
+          tex_address = tmu_baseaddress + ( t << 9 );
+          for ( s = 0; s < max_s; s += 2 ) {
+            FxU32  t0, t1;
+
+            t0 = * (const FxU32 *) (src16    );
+            t1 = * (const FxU32 *) (src16 + 2);
+            SET_TRAM( tex_address    , t0);
+            SET_TRAM( tex_address + 4, t1);
+            tex_address += 8;
+            src16 += 4;
+          }
         }
-      } /* end for t */
+      }
 #else   /* SST-1 */
       for ( ; t <= max_t; t++ ) {
         GR_CHECK_SIZE_SLOPPY();
@@ -504,13 +540,22 @@ GR_ENTRY(grTexDownloadMipMapLevelPartial, void, ( GrChipID_t tmu, FxU32 startAdd
 
   /*------------------------------------------------------------
     Restore TLOD, texMode, baseAddress
-    ------------------------------------------------------------*/
+  ------------------------------------------------------------*/
   GR_CHECK_SIZE_SLOPPY();
-  GR_SET_EXPECTED_SIZE(3*4 + 2*PACKER_WORKAROUND_SIZE);
+  GR_SET_EXPECTED_SIZE((3 +
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+                        1 +
+#else
+                        0 +
+#endif
+                        0)*4 + 2*PACKER_WORKAROUND_SIZE);
   PACKER_WORKAROUND;
   GR_SET( hw->texBaseAddr , gc->state.tmu_config[tmu].texBaseAddr );
   GR_SET( hw->textureMode , gc->state.tmu_config[tmu].textureMode );
   GR_SET( hw->tLOD        , gc->state.tmu_config[tmu].tLOD );
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+  GR_SET(baseHw->texChipSel, 0);
+#endif
   PACKER_WORKAROUND;
 
 all_done:
@@ -543,7 +588,7 @@ GR_DDFUNC(_grTexDownloadPalette, void, ( GrChipID_t tmu, GuTexPalette *pal, int 
   GR_CHECK_F( myName, end>255, "invalid end index" );
 
   PACKER_WORKAROUND;
-  hw = SST_TMU(hw,tmu);
+  hw = sst96GetTmuRegPtr(hw,tmu);
   _GlideRoot.stats.palDownloads++;
   _GlideRoot.stats.palBytes += (end-start+1)<<2;
 
@@ -579,6 +624,9 @@ GR_ENTRY(ConvertAndDownloadRle, void, ( GrChipID_t tmu, FxU32 startAddress, GrLO
   FxU16 *src;
   extern FxU16 rle_line[256];
   extern FxU16 *rle_line_end;
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+  Sstregs *baseHw;
+#endif
 
 
   GR_BEGIN_NOFIFOCHECK("grTexDownloadMipMapLevelPartial",89);
@@ -619,7 +667,7 @@ GR_ENTRY(ConvertAndDownloadRle, void, ( GrChipID_t tmu, FxU32 startAddress, GrLO
   /*------------------------------------------------------------
     Compute Base Address Given Start Address Offset
     ------------------------------------------------------------*/
-  baseAddress = _grTexCalcBaseAddress( startAddress,
+  baseAddress = _grTexCalcBaseAddress( sst96ApplyTmuAddressBias(tmu, startAddress),
                                        largeLod, 
                                        aspectRatio,
                                        format,
@@ -630,7 +678,10 @@ GR_ENTRY(ConvertAndDownloadRle, void, ( GrChipID_t tmu, FxU32 startAddress, GrLO
     Compute Physical Write Pointer
     ------------------------------------------------------------*/
   tmu_baseaddress = (FxU32)gc->tex_ptr;
-  tmu_baseaddress += (((FxU32)tmu)<<21) + (((FxU32)thisLod)<<17);
+  tmu_baseaddress += (((FxU32)thisLod)<<17);
+#if !(GLIDE_PLATFORM & GLIDE_HW_SST96)
+    tmu_baseaddress += (((FxU32)tmu)<<21);
+#endif
   
   /*------------------------------------------------------------
     Compute pertinant contents of tLOD and texMode registers 
@@ -646,13 +697,21 @@ GR_ENTRY(ConvertAndDownloadRle, void, ( GrChipID_t tmu, FxU32 startAddress, GrLO
   else sh = 3;
 
   /* account for 6 register writes and for smallest 1xN and 2xN levels*/
-  GR_SET_EXPECTED_SIZE(3*4 + 2*PACKER_WORKAROUND_SIZE);
+  GR_SET_EXPECTED_SIZE((3 +
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+                        1 +
+#endif
+                        0)*4 + 2*PACKER_WORKAROUND_SIZE);
 
   /*------------------------------------------------------------
     Update TLOD, texMode, baseAddress
-    ------------------------------------------------------------*/
+  ------------------------------------------------------------*/
   PACKER_WORKAROUND;
-  hw = SST_TMU(hw,tmu);
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+  baseHw = hw;
+  GR_SET(baseHw->texChipSel, (FxU32)tmu);
+#endif
+  hw = sst96GetTmuRegPtr(hw,tmu);
   GR_SET( hw->texBaseAddr , baseAddress );
   GR_SET( hw->textureMode , texMode );
   GR_SET( hw->tLOD , tLod );
@@ -708,11 +767,18 @@ GR_ENTRY(ConvertAndDownloadRle, void, ( GrChipID_t tmu, FxU32 startAddress, GrLO
     Restore TLOD, texMode, baseAddress
     ------------------------------------------------------------*/
   GR_CHECK_SIZE_SLOPPY();
-  GR_SET_EXPECTED_SIZE(3*4 + 2*PACKER_WORKAROUND_SIZE);
+  GR_SET_EXPECTED_SIZE((3 +
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+                        1 +
+#endif
+                        0)*4 + 2*PACKER_WORKAROUND_SIZE);
   PACKER_WORKAROUND;
   GR_SET( hw->texBaseAddr , gc->state.tmu_config[tmu].texBaseAddr );
   GR_SET( hw->textureMode , gc->state.tmu_config[tmu].textureMode );
   GR_SET( hw->tLOD        , gc->state.tmu_config[tmu].tLOD );
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+  GR_SET(baseHw->texChipSel, 0);
+#endif
   PACKER_WORKAROUND;
 
 all_done:

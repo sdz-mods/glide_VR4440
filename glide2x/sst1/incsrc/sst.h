@@ -1080,7 +1080,7 @@ typedef struct sstregs {        // THE CHIP
 #else
 #define SST_WRAP(sst,n) ((Sstregs *)(((n) << 12) + ((FxU32) (sst))))
 #define SST_CHIP(sst,n) ((Sstregs *)(((n) << 16) + ((FxU32) (sst))))
-#define SST_TMU(sst,n)  ((Sstregs *)(((n) << 17) + ((FxU32) (sst))))
+#define SST_TMU(sst,n)  SST_CHIP((sst), (0x2 << (n)))
 #define SST_TREX(sst,n) SST_TMU(sst,n)
 #define SST_LFB_ADDRESS(sst)    (0x000000+(FxU32)(sst))
 #define SST_TEX_ADDRESS(sst)    (0x600000+(FxU32)(sst))

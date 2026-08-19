@@ -1356,6 +1356,43 @@ if (_GlideRoot.CPUType == 6) {\
 #define SST96_TEX_PTR(a) \
         ((FxU32 *) (((FxU32) a) + VG96_TEXTURE_OFFSET))
 
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+static FxBool
+sst96EnvEnabled(const char *name)
+{
+  const char *value = getenv(name);
+
+  return (value != NULL) && (value[0] != '\0') && (value[0] != '0');
+}
+
+static Sstregs *
+sst96GetTmuRegPtr(Sstregs *hw, GrChipID_t tmu)
+{
+  FxU32 chipField = 0x2U << (FxU32)tmu;
+
+  if (tmu == GR_TMU1) {
+    const char *value = getenv("SST96_RUNTIME_TMU1_CHIP_FIELD");
+
+    if (value == NULL || value[0] == '\0')
+      value = getenv("SST96_TMU1_CHIP_FIELD");
+
+    if (value != NULL && value[0] != '\0') {
+      const FxU32 requested = (FxU32)strtoul(value, NULL, 0);
+
+      if (requested == 0x0U || requested == 0x4U || requested == 0x8U)
+        chipField = requested;
+    }
+  }
+
+  return SST_CHIP(hw, chipField);
+}
+
+#define sst96ApplyTmuAddressBias(tmu, startAddress) (startAddress)
+#else
+#define sst96GetTmuRegPtr(hw, tmu) SST_TMU((hw), (tmu))
+#define sst96ApplyTmuAddressBias(tmu, startAddress) (startAddress)
+#endif
+
 void rle_decode_line_asm(FxU16 *tlut,FxU8 *src,FxU16 *dest);
 
 extern FxU16 rle_line[256];

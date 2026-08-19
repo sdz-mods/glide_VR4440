@@ -62,7 +62,7 @@ GR_ENTRY(grTexClampMode, void, ( GrChipID_t tmu, GrTextureClampMode_t s_clamp_mo
   texturemode |=  clampMode;
 
   PACKER_WORKAROUND;
-  GR_SET( SST_TMU(hw,tmu)->textureMode , texturemode );
+  GR_SET( sst96GetTmuRegPtr(hw,tmu)->textureMode , texturemode );
   PACKER_WORKAROUND;
 
   gc->state.tmu_config[tmu].textureMode = texturemode;
@@ -267,8 +267,8 @@ GR_ENTRY(grTexCombine, void, ( GrChipID_t tmu, GrCombineFunction_t rgb_function,
 
   /* update register */
   PACKER_WORKAROUND;
-  GR_SET( SST_TMU(hw,tmu)->textureMode , texturemode );
-  GR_SET( SST_TMU(hw,tmu)->tLOD, tLod );
+  GR_SET( sst96GetTmuRegPtr(hw,tmu)->textureMode , texturemode );
+  GR_SET( sst96GetTmuRegPtr(hw,tmu)->tLOD, tLod );
   PACKER_WORKAROUND;
   gc->state.tmu_config[tmu].textureMode = texturemode;
   gc->state.tmu_config[tmu].tLOD = tLod;
@@ -289,7 +289,7 @@ GR_DDFUNC(_grTexDetailControl, void, ( GrChipID_t tmu, FxU32 detail ))
   GR_CHECK_TMU( "_grTexDetailControl", tmu );
 
   PACKER_WORKAROUND;
-  GR_SET( SST_TMU(hw,tmu)->tDetail , detail );
+  GR_SET( sst96GetTmuRegPtr(hw,tmu)->tDetail , detail );
   PACKER_WORKAROUND;
   gc->state.tmu_config[tmu].tDetail = detail;
   GR_END();
@@ -313,7 +313,7 @@ GR_ENTRY(grTexFilterMode, void, ( GrChipID_t tmu, GrTextureFilterMode_t minfilte
              (magfilter == GR_TEXTUREFILTER_BILINEAR ? SST_TMAGFILTER : 0);
 
   PACKER_WORKAROUND;
-  GR_SET( SST_TMU(hw,tmu)->textureMode , texMode );
+  GR_SET( sst96GetTmuRegPtr(hw,tmu)->textureMode , texMode );
   PACKER_WORKAROUND;
   gc->state.tmu_config[tmu].textureMode = texMode;
   GR_END();
@@ -336,7 +336,7 @@ GR_ENTRY(grTexLodBiasValue, void, ( GrChipID_t tmu, float fvalue ))
   tLod |= _grTexFloatLODToFixedLOD( fvalue ) << SST_LODBIAS_SHIFT;
 
   PACKER_WORKAROUND;
-  GR_SET( SST_TMU(hw,tmu)->tLOD , tLod );
+  GR_SET( sst96GetTmuRegPtr(hw,tmu)->tLOD , tLod );
   PACKER_WORKAROUND;
 
   gc->state.tmu_config[tmu].tLOD = tLod;
@@ -440,7 +440,7 @@ GR_ENTRY(grTexMipMapMode, void, ( GrChipID_t tmu, GrMipMapMode_t mmMode, FxBool 
     Write State To Hardware and Update Glide Shadow State
     --------------------------------------------------------------*/
   PACKER_WORKAROUND;
-  hw = SST_TMU(hw,tmu);
+  hw = sst96GetTmuRegPtr(hw,tmu);
   GR_SET( hw->tLOD , tLod );
   GR_SET( hw->textureMode , texMode );
   PACKER_WORKAROUND;
@@ -507,7 +507,7 @@ GR_ENTRY(grTexNCCTable, void, ( GrChipID_t tmu, GrNCCTable_t table ))
     texMode &= ~(SST_TNCCSELECT);
 
   PACKER_WORKAROUND;
-  GR_SET( SST_TMU(hw,tmu)->textureMode , texMode );
+  GR_SET( sst96GetTmuRegPtr(hw,tmu)->textureMode , texMode );
   PACKER_WORKAROUND;
 
   gc->state.tmu_config[tmu].textureMode = texMode;
@@ -588,7 +588,7 @@ GR_ENTRY(grTexSource, void, ( GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd,
 
   /* Write relevant registers out to hardware */
   PACKER_WORKAROUND;
-  hw = SST_TMU(hw,tmu);
+  hw = sst96GetTmuRegPtr(hw,tmu);
   GR_SET( hw->texBaseAddr , baseAddress );
   GR_SET( hw->textureMode , texMode );
   GR_SET( hw->tLOD , tLod );
@@ -634,7 +634,7 @@ GR_ENTRY(grTexMultibase, void, ( GrChipID_t tmu, FxBool enable ))
     Write State To Hardware and Update Glide Shadow State
     --------------------------------------------------------------*/
   PACKER_WORKAROUND;
-  GR_SET( SST_TMU(hw,tmu)->tLOD , tLod );
+  GR_SET( sst96GetTmuRegPtr(hw,tmu)->tLOD , tLod );
   PACKER_WORKAROUND;
 
   gc->state.tmu_config[tmu].tLOD = tLod;
@@ -679,7 +679,7 @@ GR_ENTRY(grTexMultibaseAddress, void, ( GrChipID_t tmu, GrTexBaseRange_t range, 
 
   /* Write relevant registers out to hardware and shadows */
   PACKER_WORKAROUND;
-  hw = SST_TMU(hw,tmu);
+  hw = sst96GetTmuRegPtr(hw,tmu);
   switch (range) {
     case GR_TEXBASE_256:
       baseAddress = _grTexCalcBaseAddress( startAddress,
@@ -742,7 +742,7 @@ _grTexForceLod( GrChipID_t tmu, int value )
   tLod |= SST_TLOD_MINMAX_INT(value,value);
 
   PACKER_WORKAROUND;
-  GR_SET( SST_TMU(hw,tmu)->tLOD , tLod );
+  GR_SET( sst96GetTmuRegPtr(hw,tmu)->tLOD , tLod );
   PACKER_WORKAROUND;
   gc->state.tmu_config[tmu].tLOD = tLod;
 } /* _grTexForceLod */

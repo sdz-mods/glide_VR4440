@@ -175,6 +175,7 @@
 **
 */
 
+#include <stdio.h>
 #include <string.h>
 #include <3dfx.h>
 #include <glidesys.h>
@@ -187,6 +188,29 @@
 
 #if ( GLIDE_PLATFORM & GLIDE_HW_SST96 )
 #include <init.h>
+
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+static void
+sst96TraceTmuState(const char *tag, FxU32 a, FxU32 b, FxU32 c, FxU32 d)
+{
+  FILE *f;
+
+  if (!sst96EnvEnabled("SST96_TRACE_TMU_STATE"))
+    return;
+
+  f = fopen("rush_tmu_state.log", "a");
+  if (f == NULL)
+    return;
+
+  fprintf(f, "%s: %08lx %08lx %08lx %08lx\n",
+          tag,
+          (unsigned long)a,
+          (unsigned long)b,
+          (unsigned long)c,
+          (unsigned long)d);
+  fclose(f);
+}
+#endif
 #endif
 
 /*---------------------------------------------------------------------------
@@ -1374,7 +1398,7 @@ GR_ENTRY(grGlideSetState, void, ( const GrState *state ))
   GR_SET( hw->c1, gc->state.fbi_config.color1 );
 
   for ( tmu = 0; tmu < gc->num_tmu; tmu++ ) {
-    tmuregs = SST_TMU(hw,tmu);
+    tmuregs = sst96GetTmuRegPtr(hw,tmu);
     PACKER_WORKAROUND;
     GR_SET( tmuregs->textureMode, gc->state.tmu_config[tmu].textureMode );
     GR_SET( tmuregs->tLOD, gc->state.tmu_config[tmu].tLOD );
@@ -1594,6 +1618,14 @@ GR_DDFUNC(_grUpdateParamIndex, void, ( void ))
   
   gc->state.paramIndex = paramIndex;
 
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+  sst96TraceTmuState("param",
+                     paramIndex,
+                     gc->state.tmuMask,
+                     hints,
+                     fbzColorPath);
+#endif
+
   _grRebuildDataList();
 
 } /* _grUpdateParamIndex */
@@ -1664,6 +1696,8 @@ GR_DDFUNC(_grRebuildDataList, void, ( void ))
   int curTriSize, params;
   FxU32 gwHeaderNum, gwpSize;            /* header + vertices */
   FxU32 i, packMask=1;
+  FxBool directTmu1Params = FXFALSE;
+  FxU32 directTmu1ParamCount = 0;
   Sstregs *tmu0;
   Sstregs *tmu1;
     
@@ -1680,7 +1714,9 @@ GR_DDFUNC(_grRebuildDataList, void, ( void ))
   if (_GlideRoot.CPUType == 6) packMask |= 2;
   
   tmu0 = SST_CHIP(hw,0xE); /* tmu 0,1,2 */
-  tmu1 = SST_CHIP(hw,0xC); /* tmu 1,2 */
+  tmu1 = sst96EnvEnabled("SST96_TMU1_PACKET_TMU_ADDR") ?
+         SST_TMU(hw, GR_TMU1) :
+         SST_CHIP(hw,0xC); /* tmu 1,2 */
   
   /* init group write data */
   gwHeaderNum = 0;
@@ -1775,6 +1811,55 @@ GR_DDFUNC(_grRebuildDataList, void, ( void ))
     curTriSize += 2;
     params += 1;
   }
+
+  directTmu1Params = ((i & (STATE_REQUIRES_ST_TMU1 | STATE_REQUIRES_W_TMU1)) &&
+                      sst96EnvEnabled("SST96_DIRECT_TMU1_PARAMS"));
+
+  if (i & (STATE_REQUIRES_ST_TMU1 | STATE_REQUIRES_W_TMU1)) {
+    gc->dataList[curTriSize + 0].i    = packMask;
+    gc->dataList[curTriSize + 0].addr =
+      (float *) GWH_GEN_ADDRESS(&tmu1->FvA.x);
+    curTriSize += 1;
+
+    if (gwpSize & 1)
+      ++gwpSize;
+    if (directTmu1Params)
+      gwpSize += 10;            /* Direct TMU0 pass + TMU1 tex regs. */
+    else
+      gwpSize += 2;             /* 2 header */
+
+    ++gwHeaderNum;
+    gc->hwDep.sst96Dep.gwHeaders[gwHeaderNum] = 0;
+
+    if (i & STATE_REQUIRES_ST_TMU1) {
+      gc->dataList[curTriSize + 0].i    = GR_VERTEX_SOW_TMU1_OFFSET<<2;
+      gc->dataList[curTriSize + 0].addr =
+        directTmu1Params ? (float *)&SST_TMU(hw, GR_TMU1)->Fs : 0L;
+      gc->dataList[curTriSize + 1].i    = GR_VERTEX_TOW_TMU1_OFFSET<<2;
+      gc->dataList[curTriSize + 1].addr =
+        directTmu1Params ? (float *)&SST_TMU(hw, GR_TMU1)->Ft : 0L;
+      curTriSize += 2;
+      params += 2;
+      if (directTmu1Params)
+        directTmu1ParamCount += 2;
+
+      gc->hwDep.sst96Dep.gwHeaders[gwHeaderNum] |= GWH_ST_BITS;
+      gwpSize += directTmu1Params ? 12 : 6;
+    }
+
+    if (i & STATE_REQUIRES_W_TMU1) {
+      gc->dataList[curTriSize + 0].i    = GR_VERTEX_OOW_TMU1_OFFSET<<2;
+      gc->dataList[curTriSize + 0].addr =
+        directTmu1Params ? (float *)&SST_TMU(hw, GR_TMU1)->Fw : 0L;
+      curTriSize += 1;
+      params += 1;
+      if (directTmu1Params)
+        directTmu1ParamCount += 1;
+
+      gc->hwDep.sst96Dep.gwHeaders[gwHeaderNum] |= GWH_W_BITS;
+      gwpSize += directTmu1Params ? 6 : 3;
+    }
+  }
   
   gc->dataList[curTriSize++].i = 0;     /* terminate the list with 0,*      */
   /* followed by the FtriangleCMD reg */
@@ -1789,7 +1874,13 @@ GR_DDFUNC(_grRebuildDataList, void, ( void ))
     /* If we've had a chip field change above then we need to start a
      ** new packet for the triangle command, so we don't put it in the
      ** original */
-    gwpSize +=4;        /* The triangleCMD GWP constitutes 4 DWORDS */
+    if (directTmu1Params) {
+      gwpSize += 2;     /* Direct FIFO write of FtriangleCMD. */
+      if (gwpSize & 1)
+        ++gwpSize;
+    } else {
+      gwpSize +=4;      /* The triangleCMD GWP constitutes 4 DWORDS */
+    }
   } else {
     gc->hwDep.sst96Dep.gwHeaders[gwHeaderNum] |= GWH_FTRIANGLECMD_BIT;
     gwpSize++;                    /* Triangle Command */
@@ -1801,7 +1892,16 @@ GR_DDFUNC(_grRebuildDataList, void, ( void ))
   _GlideRoot.curTriSize = gwpSize << 2; /* GR.curTriSize in bytes */
 
   /* Need to know tri size without gradients for planar polygons */
-  _GlideRoot.curTriSizeNoGradient = _GlideRoot.curTriSize - (params<<3);
+  _GlideRoot.curTriSizeNoGradient =
+    _GlideRoot.curTriSize - (params<<3) - (directTmu1ParamCount<<3);
+
+#if (GLIDE_PLATFORM & GLIDE_HW_SST96)
+  sst96TraceTmuState("gw",
+                     i,
+                     gc->hwDep.sst96Dep.gwHeaders[0],
+                     gc->hwDep.sst96Dep.gwHeaders[1],
+                     _GlideRoot.curTriSize);
+#endif
   
 #ifdef GDBG_INFO_ON
   GDBG_INFO((282, "DataList\n"));
@@ -1845,7 +1945,9 @@ GR_DDFUNC(_grRebuildDataList, void, ( void ))
 #endif /* GLIDE_USE_ALT_REGMAP */
   
   tmu0 = SST_CHIP(hw,0xE); /* tmu 0,1,2 */
-  tmu1 = SST_CHIP(hw,0xC); /* tmu 1,2 */
+  tmu1 = sst96EnvEnabled("SST96_TMU1_PACKET_TMU_ADDR") ?
+         SST_TMU(hw, GR_TMU1) :
+         SST_CHIP(hw,0xC); /* tmu 1,2 */
   
   if (i & STATE_REQUIRES_IT_DRGB) {
     /* add 9 to size array for r,drdx,drdy,g,dgdx,dgdy,b,dbdx,dbdy */

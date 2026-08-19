@@ -148,7 +148,7 @@ GR_ENTRY(guTexSource, void, ( GrMipMapId_t mmid ))
   /* Write relevant registers out to hardware */
 
   PACKER_WORKAROUND;
-  hw = SST_TMU(hw,tmu);
+  hw = sst96GetTmuRegPtr(hw,tmu);
   GR_SET( hw->texBaseAddr , baseAddress );
   GR_SET( hw->textureMode , texMode );
   GR_SET( hw->tLOD , tLod );

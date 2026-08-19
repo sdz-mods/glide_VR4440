@@ -57,11 +57,11 @@ G2_DIR = $(FX_GLIDE_HW)/glide/src
 endif
 
 all:
-	make -f Makefile.mingw -C $(G2_DIR)
+	$(MAKE) -f Makefile.mingw -C $(G2_DIR)
 # USE_X86=1 USE_3DNOW=1 USE_MMX=1
 
 clean:
-	make -f Makefile.mingw -C $(G2_DIR) clean
+	$(MAKE) -f Makefile.mingw -C $(G2_DIR) clean
 
 realclean:
-	make -f Makefile.mingw -C $(G2_DIR) realclean
+	$(MAKE) -f Makefile.mingw -C $(G2_DIR) realclean

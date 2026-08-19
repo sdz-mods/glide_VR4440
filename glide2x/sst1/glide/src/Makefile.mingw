@@ -47,10 +47,12 @@
 GLIDE_RES = glide.res
 GLIDE_DLL = glide2x.dll
 GLIDE_DEF = glide2x.def
+GLIDE_RAW_DEF = glide2x.raw.def
 GLIDE_IMP = libglide2x.dll.a
+GLIDE_TMP_DLL = glide2x.tmp.dll
 
 FX_GLIDE_HW ?= sst1
-FX_GLIDE_SW = ../../../swlibs
+FX_GLIDE_SW = ../../../../swlibs
 GLIDE_LIBDIR = ../../lib/$(FX_GLIDE_HW)
 
 ###############################################################################
@@ -130,7 +132,7 @@ CDEFS += -DGLIDE_PLUG -DGLIDE_SPLASH
 ###############################################################################
 
 # linker
-LDFLAGS = -shared -m32 -Wl,--enable-auto-image-base -Wl,--no-undefined
+LDFLAGS = -shared -m32 -static-libgcc -Wl,--enable-auto-image-base -Wl,--no-undefined
 #	 -Xlinker --output-def -Xlinker $(GLIDE_LIBDIR)/$(GLIDE_DEF)
 #	 -Xlinker --out-implib -Xlinker $(GLIDE_LIBDIR)/$(GLIDE_IMP)
 DLLTOOL_FLAGS = --as-flags=--32 -m i386 -U
@@ -174,7 +176,7 @@ ifeq ($(WINMODE),1)
 HOST_CFLAGS=$(CFLAGS)
 else
 # for cross-builds
-HOST_CFLAGS=$(filter-out -mcpu=% -mtune=% -DFX_DLL_ENABLE -march=%,$(CFLAGS))
+HOST_CFLAGS=$(filter-out -m32 -mcpu=% -mtune=% -DFX_DLL_ENABLE -march=%,$(CFLAGS))
 endif
 
 ###############################################################################
@@ -271,10 +273,14 @@ all: glide2x
 
 glide2x: $(GLIDE_LIBDIR)/$(GLIDE_DLL) $(GLIDE_LIBDIR)/$(GLIDE_IMP)
 
-$(GLIDE_LIBDIR)/$(GLIDE_DEF): $(GLIDE_LIBDIR)/$(GLIDE_DLL)
-$(GLIDE_LIBDIR)/$(GLIDE_DLL): $(GLIDE_OBJECTS) $(GLIDE_RES)
-	$(LD) -o $@ $(LDFLAGS) -Xlinker --output-def -Xlinker $(GLIDE_LIBDIR)/$(GLIDE_DEF) \
+$(GLIDE_LIBDIR)/$(GLIDE_DEF): $(GLIDE_OBJECTS) $(GLIDE_RES) fxdef.exe
+	$(LD) -o $(GLIDE_LIBDIR)/$(GLIDE_TMP_DLL) $(LDFLAGS) \
+		-Xlinker --output-def -Xlinker $(GLIDE_LIBDIR)/$(GLIDE_RAW_DEF) \
 		$(GLIDE_OBJECTS) $(LDLIBS) $(GLIDE_RES)
+	./fxdef.exe $(GLIDE_LIBDIR)/$(GLIDE_RAW_DEF) > $@
+$(GLIDE_LIBDIR)/$(GLIDE_DLL): $(GLIDE_OBJECTS) $(GLIDE_RES) $(GLIDE_LIBDIR)/$(GLIDE_DEF)
+	$(LD) -o $@ $(LDFLAGS) \
+		$(GLIDE_OBJECTS) $(LDLIBS) $(GLIDE_RES) $(GLIDE_LIBDIR)/$(GLIDE_DEF)
 $(GLIDE_LIBDIR)/$(GLIDE_IMP): $(GLIDE_LIBDIR)/$(GLIDE_DLL)
 	$(DLLTOOL) $(DLLTOOL_FLAGS) --dllname $(GLIDE_DLL) --input-def $(GLIDE_LIBDIR)/$(GLIDE_DEF) --output-lib $@
 
@@ -304,6 +310,9 @@ fxgasm.h: fxgasm.exe
 fxgasm.exe: fxgasm.c
 	$(HOST_CC) -o $@ $(HOST_CFLAGS) $<
 
+fxdef.exe: fxdef.c
+	$(HOST_CC) -o $@ $(HOST_CFLAGS) $<
+
 ###############################################################################
 #	clean, realclean
 ###############################################################################
@@ -316,7 +325,10 @@ clean:
 	-$(call UNLINK,$(FX_GLIDE_SW)/newpci/pcilib/*.o)
 	-$(call UNLINK,fxinline.h)
 	-$(call UNLINK,fxgasm.h)
+	-$(call UNLINK,fxdef.exe)
 	-$(call UNLINK,$(GLIDE_RES))
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_RAW_DEF))
+	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_TMP_DLL))
 
 realclean: clean
 	-$(call UNLINK,$(GLIDE_LIBDIR)/$(GLIDE_DLL))

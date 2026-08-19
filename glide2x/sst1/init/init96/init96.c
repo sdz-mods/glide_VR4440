@@ -24,6 +24,7 @@
 /* ANSI Headers */
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 
 #if defined(__DOS32__) || defined(INIT96VGASWAP)
@@ -107,6 +108,8 @@ static char *bufTypeNames[] = {
   -------------------------------------------------------------------*/
 volatile FxU32   *sstHW;
 volatile Sstregs *sstPtr;
+
+#define SST96_MAX_TMUS 2
 
 typedef struct _BufInfo {
   /* DISPLAY Stuff */
@@ -213,6 +216,84 @@ myGetenv(const char* envKey)
   return (callRealGetenvP
           ? getenv(envKey)
           : NULL);
+}
+
+/* This build targets the two-TMU Rush board.  Stock one-TMU boards can use
+ * SST96_NUM_TMUS=1 without requiring a separate DLL. */
+static FxU32
+sst96ConfiguredTmuCount(void)
+{
+  const char *envp = myGetenv("SST96_NUM_TMUS");
+  FxU32 tmuCount = SST96_MAX_TMUS;
+
+  if (envp != NULL)
+    tmuCount = atoi(envp);
+  if (tmuCount < 1) tmuCount = 1;
+  if (tmuCount > SST96_MAX_TMUS) tmuCount = SST96_MAX_TMUS;
+
+  return tmuCount;
+}
+
+static FxU32
+sst96ConfiguredTmuMemory(void)
+{
+  const char *envp = myGetenv("SST96_TMUMEM_SIZE");
+  FxU32 tmuMemory = 4;
+
+  if (envp != NULL && envp[0] != '\0') {
+    FxU32 configured = atoi(envp);
+
+    if (configured == 1 || configured == 2 || configured == 4)
+      tmuMemory = configured;
+  }
+
+  return tmuMemory;
+}
+
+static FxU32
+sst96GetTmuChipField(FxU32 tmu)
+{
+  FxU32 chipField = 0x2U << tmu;
+
+  if (tmu == 1U) {
+    const char *value = myGetenv("SST96_TMU1_CHIP_FIELD");
+
+    if (value != NULL && value[0] != '\0') {
+      const FxU32 requested = (FxU32)strtoul(value, NULL, 0);
+
+      if (requested == 0x4U || requested == 0x8U)
+        chipField = requested;
+    }
+  }
+
+  return chipField;
+}
+
+#define SST96_TREX(sst, tmu) SST_CHIP((sst), sst96GetTmuChipField(tmu))
+
+static void
+sst96Trace(const char *format, ...)
+{
+  const char *enabled = myGetenv("SST96_TRACE_INIT");
+  const char *path;
+  FILE *f;
+  va_list args;
+
+  if (enabled == NULL || enabled[0] == '\0' || enabled[0] == '0')
+    return;
+
+  path = myGetenv("SST96_TRACE_FILE");
+  if (path == NULL || path[0] == '\0')
+    path = "rush_init96.log";
+
+  f = fopen(path, "a");
+  if (f == NULL)
+    return;
+
+  va_start(args, format);
+  vfprintf(f, format, args);
+  va_end(args);
+  fclose(f);
 }
 
 /*-----------Debuging Info Data------------------------------*/
@@ -575,6 +656,7 @@ static FxBool sense(FxU32 *sstbase, VG96Info *info, FxU32 tmu,
                    FxU32 mem, FxU32 init)
 {
   volatile Sstregs *sst = (Sstregs *) sstbase;
+  volatile Sstregs *trex = SST96_TREX(sstPtr, tmu);
   FxU32 *texAddr = (FxU32 *)SST96_TEX_PTR(sstbase);
   FxBool same = FXFALSE;
   FxU16 fmem, orgmem;
@@ -597,7 +679,10 @@ int nWaits;\
   /* base address for lod0 */
   mem = mem - ((FXBIT(14) + FXBIT(12) + FXBIT(10) + FXBIT(8) + FXBIT(6) + FXBIT(4) + FXBIT(2) + 1)*8); /* 8X */
 
-  SET(sstPtr->texBaseAddr, mem>>3);
+  SET(trex->texBaseAddr, mem>>3);
+
+  SET(sstPtr->texChipSel, tmu);
+  WAITLOOP;
 
   *(texAddr + (8 << 15)) = init;
   /* 
@@ -621,7 +706,13 @@ int nWaits;\
   if (fmem == init)
     same = FXTRUE;
 
+  SET(sstPtr->texChipSel, 0);
+  WAITLOOP;
+
   *(FxU16 *)sstbase = orgmem;
+
+  sst96Trace("sense: tmu=%u mem=0x%06x pattern=0x%04x readback=0x%04x result=%u\n",
+             tmu, mem, init, fmem, same);
 
   return same;
 }
@@ -630,22 +721,33 @@ FX_EXPORT FxBool FX_CSTYLE
 Init96GetTmuMemory(FxU32 *sstbase, VG96Info *info, FxU32 tmu,
         FxU32 *TmuMemorySize)
 {
+  volatile Sstregs *trex = SST96_TREX(sstPtr, tmu);
   FxU32 data;
+  FxU32 i;
   const char *envp;
   
   envp = myGetenv(("SST96_TMUMEM_SIZE"));
   if(envp) {
     *TmuMemorySize = atoi(envp);
+    sst96Trace("Init96GetTmuMemory: tmu=%u env SST96_TMUMEM_SIZE=%u\n",
+               tmu, *TmuMemorySize);
     return(FXTRUE);
   }
-  SET(sstPtr->trexInit0, 0x05441);
+
+  sst96Trace("Init96GetTmuMemory: begin tmu=%u\n", tmu);
+  GDBG_INFO((80, "Init96GetTmuMemory: probing TMU%u memory aperture\n", tmu));
+  SET(trex->trexInit0, 0x05441);
 
   SET(sstPtr->colBufferSetup, 0x28000000); /* color buffer */
   SET(sstPtr->fbzMode, SST_RGBWRMASK);
   SET(sstPtr->fbzColorPath, SST_RGBSEL_TREXOUT | SST_CC_PASS | SST_ENTEXTUREMAP);
-  SET(sstPtr->textureMode, SST_RGB565 | SST_TC_REPLACE | SST_TCA_REPLACE);
+  for (i = 0; i < tmu; i++) {
+    volatile Sstregs *upstream = SST96_TREX(sstPtr, i);
+    SET(upstream->textureMode, SST_TC_PASS | SST_TCA_PASS);
+  }
+  SET(trex->textureMode, SST_RGB565 | SST_TC_REPLACE | SST_TCA_REPLACE);
   /* set lod8 */
-  SET(sstPtr->tLOD, ((8 << 2) | (8 << 7)));
+  SET(trex->tLOD, ((8 << 2) | (8 << 7)));
 
   /* 
      first see if we have 4 Mbytes by writing a texel at 2MB followed by
@@ -659,6 +761,8 @@ Init96GetTmuMemory(FxU32 *sstbase, VG96Info *info, FxU32 tmu,
     data = sense(sstbase,info,tmu,0x200000, SENSE1);
     if (data) {
       *TmuMemorySize = 4; 
+      sst96Trace("Init96GetTmuMemory: tmu=%u selected=4\n", tmu);
+      GDBG_INFO((80, "Init96GetTmuMemory: TMU%u selected 4 MB\n", tmu));
       return(FXTRUE);
     }
   }
@@ -668,6 +772,8 @@ Init96GetTmuMemory(FxU32 *sstbase, VG96Info *info, FxU32 tmu,
     data = sense(sstbase,info,tmu,0x100000, SENSE1);
     if (data) {
       *TmuMemorySize = 2;
+      sst96Trace("Init96GetTmuMemory: tmu=%u selected=2\n", tmu);
+      GDBG_INFO((80, "Init96GetTmuMemory: TMU%u selected 2 MB\n", tmu));
       return(FXTRUE);
     }
   }
@@ -677,11 +783,16 @@ Init96GetTmuMemory(FxU32 *sstbase, VG96Info *info, FxU32 tmu,
     data = sense(sstbase,info,tmu,0x000000, SENSE1);
     if (data) {
       *TmuMemorySize = 1; 
+      sst96Trace("Init96GetTmuMemory: tmu=%u selected=1\n", tmu);
+      GDBG_INFO((80, "Init96GetTmuMemory: TMU%u selected 1 MB\n", tmu));
       return(FXTRUE);
     }
   }
 
 #undef WAITLOOP
+
+  GDBG_INFO((80, "Init96GetTmuMemory: TMU%u probe failed\n", tmu));
+  sst96Trace("Init96GetTmuMemory: tmu=%u failed\n", tmu);
 
   return(FXFALSE);
 }
@@ -694,11 +805,81 @@ Init96GetTmuMemory(FxU32 *sstbase, VG96Info *info, FxU32 tmu,
 FX_EXPORT FxBool FX_CSTYLE
 sst96InitGetTmuInfo(FxU32 *sstbase, VG96Info *info)
 {
+  FxU32 tmuMem;
+  FxU32 forcedTmus = sst96ConfiguredTmuCount();
+  FxU32 fallbackTmuRam;
+  const char *probeEnv = myGetenv("SST96_PROBE_TMU_MEMORY");
+
   sstPtr = 
     (volatile Sstregs *)(SST96_COMMAND_REGS(sstbase));
 
-  if(Init96GetTmuMemory(sstbase, info, 0, &info->tfxRam) == FXFALSE)
+  sst96Trace("sst96InitGetTmuInfo: begin forced=%u initial_nTFX=%u initial_tfxRam=%u\n",
+             forcedTmus, info->nTFX, info->tfxRam);
+
+  if (probeEnv == NULL || probeEnv[0] == '\0' || probeEnv[0] == '0') {
+    info->nTFX = forcedTmus;
+    info->tfxRev = 1;
+    info->tfxRam = sst96ConfiguredTmuMemory();
+    sst96Trace("sst96InitGetTmuInfo: using configured nTFX=%u tfxRam=%u\n",
+               info->nTFX, info->tfxRam);
+    return(FXTRUE);
+  }
+
+  fallbackTmuRam = info->tfxRam;
+  info->nTFX = 1;
+  info->tfxRev = 1;
+
+  if(Init96GetTmuMemory(sstbase, info, 0, &info->tfxRam) == FXFALSE) {
+    sst96Trace("sst96InitGetTmuInfo: TMU0 probe failed\n");
+    if (forcedTmus > 0) {
+      info->nTFX = forcedTmus;
+      info->tfxRam = fallbackTmuRam;
+
+      GDBG_INFO((80,
+                 "sst96InitGetTmuInfo: TMU0 probe failed, keeping forced %u TMU(s) with %u MB fallback\n",
+                 info->nTFX,
+                 info->tfxRam));
+      return(FXTRUE);
+    }
+
     return(FXFALSE);
+  }
+
+  if (forcedTmus > 0) {
+    GDBG_INFO((80, "sst96InitGetTmuInfo: forcing %u TMU(s)\n", forcedTmus));
+    info->nTFX = forcedTmus;
+
+    if ((forcedTmus > 1) &&
+        (Init96GetTmuMemory(sstbase, info, 1, &tmuMem) == FXTRUE) &&
+        (tmuMem != info->tfxRam)) {
+      sst96Trace("sst96InitGetTmuInfo: forced TMU1 mem mismatch tmu0=%u tmu1=%u\n",
+                 info->tfxRam, tmuMem);
+      GDBG_INFO((80,
+                 "sst96InitGetTmuInfo: TMU memory mismatch (%u MB vs %u MB), using smaller size\n",
+                 info->tfxRam, tmuMem));
+      if (tmuMem < info->tfxRam) info->tfxRam = tmuMem;
+    }
+  } else if (Init96GetTmuMemory(sstbase, info, 1, &tmuMem) == FXTRUE) {
+    info->nTFX = 2;
+    sst96Trace("sst96InitGetTmuInfo: TMU1 probe succeeded mem=%u\n", tmuMem);
+
+    if (tmuMem != info->tfxRam) {
+      sst96Trace("sst96InitGetTmuInfo: auto TMU mem mismatch tmu0=%u tmu1=%u\n",
+                 info->tfxRam, tmuMem);
+      GDBG_INFO((80,
+                 "sst96InitGetTmuInfo: TMU memory mismatch (%u MB vs %u MB), using smaller size\n",
+                 info->tfxRam, tmuMem));
+      if (tmuMem < info->tfxRam) info->tfxRam = tmuMem;
+    }
+  }
+
+  GDBG_INFO((80, "sst96InitGetTmuInfo: detected %u TMU(s), %u MB per TMU%s\n",
+             info->nTFX,
+             info->tfxRam,
+             (forcedTmus > 0) ? " (forced)" : ""));
+  sst96Trace("sst96InitGetTmuInfo: done nTFX=%u tfxRam=%u forced=%u\n",
+             info->nTFX, info->tfxRam, forcedTmus);
+
   return(FXTRUE);
 }
 
@@ -775,6 +956,13 @@ INITVG96ENTRY(init96MapBoard, FxBool , (void *rd, void *info, FxU16 vID, FxU16 d
 
   if (curHALData->initGetInfo)
     (*curHALData->initGetInfo)(vg96Info);
+  sst96Trace("init96MapBoard: after partner initGetInfo nTFX=%u tfxRam=%u vg96Ram=0x%x\n",
+             vg96Info->nTFX, vg96Info->tfxRam, vg96Info->vg96Ram);
+
+  vg96Info->nTFX = sst96ConfiguredTmuCount();
+  sst96Trace("init96MapBoard: configured nTFX=%u\n", vg96Info->nTFX);
+  GDBG_INFO((80, "%s:  Configuring %u TMU(s)\n",
+             FN_NAME, vg96Info->nTFX));
 
   fifoptr = regDesc->hwDep.VG96RegDesc.fifoApertureBase;
 
@@ -841,17 +1029,27 @@ INITVG96ENTRY(init96MapBoard, FxBool , (void *rd, void *info, FxU16 vID, FxU16 d
   }
 #else
   {
-    int xres=1, yres=1, fbStride;
-    GrScreenResolution_t    res = GR_RESOLUTION_NONE;
-    FxBool rv =
-    init96SetVideo(0, res,
-                   0, 2, 1, 
-                   2, 1, regDesc,
-                   &xres, &yres, &fbStride );
-    if ( !rv )
-      return FXFALSE;
-    sst96InitGetTmuInfo((FxU32 *)sstHW, vg96Info);
-    init96RestoreVideo(regDesc);
+    const char *probeEnv = myGetenv("SST96_PROBE_TMU_MEMORY");
+
+    if (probeEnv != NULL && probeEnv[0] != '\0' && probeEnv[0] != '0') {
+      int xres=1, yres=1, fbStride;
+      GrScreenResolution_t res = GR_RESOLUTION_NONE;
+      FxBool rv =
+      init96SetVideo(0, res,
+                     0, 2, 1,
+                     2, 1, regDesc,
+                     &xres, &yres, &fbStride );
+      sst96Trace("init96MapBoard: temporary init96SetVideo rv=%u x=%d y=%d stride=%d\n",
+                 rv, xres, yres, fbStride);
+      if ( !rv )
+        return FXFALSE;
+      sst96InitGetTmuInfo((FxU32 *)sstHW, vg96Info);
+      sst96Trace("init96MapBoard: after sst96InitGetTmuInfo nTFX=%u tfxRam=%u\n",
+                 vg96Info->nTFX, vg96Info->tfxRam);
+      init96RestoreVideo(regDesc);
+    } else {
+      sst96InitGetTmuInfo((FxU32 *)sstHW, vg96Info);
+    }
   }
 #endif
 #endif
@@ -965,29 +1163,70 @@ init96SetupRendering(InitRegisterDesc *regDesc, GrScreenResolution_t sRes)
   
   GDBG_INFO((80, "%s:  Coming out of FBI reset\n", FN_NAME));
   GETREGVALFROMENV(regVal, "SST96_FBIJRINIT0", 0xf600);
+  {
+    const char *envp;
+    int ftClkDel;
+
+    envp = myGetenv("SST96_FT_CLK_DEL");
+    if (envp && (sscanf(envp, "%i", &ftClkDel) == 1)) {
+      regVal = (regVal & ~0x0f00) | ((ftClkDel & 0xf) << 8);
+    }
+  }
   SET(sstHW[0x90 + 0x100000], regVal); /* Bit 1 disables tmu */
 
   WAITLOOP;
 
   GDBG_INFO((80, "%s:  Setting TMU FT & TF delays\n", FN_NAME));
   {
-    FxU32 trexinit0, trexinit1;
-    const char *envp;
+    int tmu;
 
-    envp = myGetenv(("SST_TREX0INIT0"));
-    if( !envp ||
-        (sscanf(envp, "%i", &trexinit0) != 1) ) {
-      trexinit0 = 0x05441;      /* TREXINIT0 */
+    for (tmu = 0; tmu < SST96_MAX_TMUS; tmu++) {
+      volatile Sstregs *trex = SST96_TREX(sstPtr, tmu);
+      FxU32 trexinit0, trexinit1;
+      const char *envp;
+
+      sst96Trace("init96SetVideo: tmu=%u chipField=0x%x\n",
+                 tmu, sst96GetTmuChipField(tmu));
+
+      envp = myGetenv((tmu == 0) ? "SST_TREX0INIT0" : "SST_TREX1INIT0");
+      if( !envp ||
+          (sscanf(envp, "%i", &trexinit0) != 1) ) {
+        trexinit0 = 0x05441;      /* TREXINIT0 */
+      }
+
+      envp = myGetenv((tmu == 0) ? "SST_TREX0INIT1" : "SST_TREX1INIT1");
+      if( !envp ||
+          (sscanf(envp, "%i", &trexinit1) != 1) ) {
+        /* TMU0 receives the upstream TREX stream.  The stock one-TMU Rush
+         * value asserts both TT inhibit override bits and blocks TMU1. */
+        trexinit1 = (tmu == 0) ? 0x0643c : 0x3643c;
+      }
+      envp = myGetenv((tmu == 0) ? "SST96_TF0_CLK_DEL" : "SST96_TF1_CLK_DEL");
+      if( !envp ) {
+        envp = myGetenv("SST96_TF_CLK_DEL");
+      }
+      if( envp ) {
+        int tfClkDel;
+
+        if( sscanf(envp, "%i", &tfClkDel) == 1 ) {
+          trexinit1 = (trexinit1 & ~0x0f000) | ((tfClkDel & 0xf) << 12);
+        }
+      }
+
+      SET(trex->trexInit0, trexinit0);
+      SET(trex->trexInit1, trexinit1);
+      {
+        int n;
+        volatile FxU32 statusRead;
+
+        /* Match the SST-1 init sequence: changing TF delay can disturb the
+         * TREX-to-FBI FIFO, so drain a few serial-status reads per TMU. */
+        for (n = 0; n < 100; n++) {
+          statusRead = sstHW[0x100000];
+        }
+        (void)statusRead;
+      }
     }
-
-    envp = myGetenv(("SST_TREX0INIT1"));
-    if( !envp ||
-        (sscanf(envp, "%i", &trexinit1) != 1) ) {
-      trexinit1 = 0x3643c; /* TREXINIT1 */
-    }
-
-    SET(sstHW[0xc7 + 0x100000], trexinit0); /* TREXINIT0 */
-    SET(sstHW[0xc8 + 0x100000], trexinit1); /* TREXINIT1 */
   }
   
   WAITLOOP;

@@ -249,6 +249,8 @@ _grSstDetectResources(void)
       }
 #elif ( GLIDE_PLATFORM & GLIDE_HW_SST96 )
       if ( info.hwClass == INIT_VG96 ) {
+        int tmu;
+
         _GlideRoot.hwConfig.SSTs[ctx].type = GR_SSTTYPE_SST96;
 
         _GlideRoot.GCs[ctx].base_ptr  = (FxU32 *)info.hwDep.vg96Info.vg96BaseAddr;
@@ -262,22 +264,27 @@ _grSstDetectResources(void)
 
         _GlideRoot.GCs[ctx].scanline_interleaved = FXFALSE;
         _GlideRoot.GCs[ctx].num_tmu              = info.hwDep.vg96Info.nTFX;
+        if (_GlideRoot.GCs[ctx].num_tmu > GLIDE_NUM_TMU)
+          _GlideRoot.GCs[ctx].num_tmu = GLIDE_NUM_TMU;
         _GlideRoot.GCs[ctx].fbuf_size            = info.hwDep.vg96Info.vg96Ram;
 
         _GlideRoot.hwConfig.num_sst++;
         _GlideRoot.hwConfig.SSTs[ctx].sstBoard.SST96Config.nTexelfx = 
-          info.hwDep.vg96Info.nTFX;
+          _GlideRoot.GCs[ctx].num_tmu;
         _GlideRoot.hwConfig.SSTs[ctx].sstBoard.SST96Config.fbRam = 
           info.hwDep.vg96Info.vg96Ram >> 20;
         _GlideRoot.hwConfig.SSTs[ctx].sstBoard.SST96Config.tmuConfig.tmuRev =
           info.hwDep.vg96Info.tfxRev;
         _GlideRoot.hwConfig.SSTs[ctx].sstBoard.SST96Config.tmuConfig.tmuRam =
           info.hwDep.vg96Info.tfxRam;
-        memset(&_GlideRoot.GCs[ctx].tmu_state[0], 0, sizeof(_GlideRoot.GCs[ctx].tmu_state[0]));
+        for (tmu = 0; tmu < _GlideRoot.GCs[ctx].num_tmu; tmu++) {
+          memset(&_GlideRoot.GCs[ctx].tmu_state[tmu], 0,
+                 sizeof(_GlideRoot.GCs[ctx].tmu_state[tmu]));
 
-        _GlideRoot.GCs[ctx].tmu_state[0].ncc_mmids[0] = GR_NULL_MIPMAP_HANDLE;
-        _GlideRoot.GCs[ctx].tmu_state[0].ncc_mmids[1] = GR_NULL_MIPMAP_HANDLE;
-        _GlideRoot.GCs[ctx].tmu_state[0].total_mem    = info.hwDep.vg96Info.tfxRam<<20;
+          _GlideRoot.GCs[ctx].tmu_state[tmu].ncc_mmids[0] = GR_NULL_MIPMAP_HANDLE;
+          _GlideRoot.GCs[ctx].tmu_state[tmu].ncc_mmids[1] = GR_NULL_MIPMAP_HANDLE;
+          _GlideRoot.GCs[ctx].tmu_state[tmu].total_mem    = info.hwDep.vg96Info.tfxRam<<20;
+        }
         
         _GlideRoot.GCs[ctx].hwDep.sst96Dep.serialStatus     = 
           (FxU32*)info.regs.hwDep.VG96RegDesc.serialStatus;
@@ -327,11 +334,21 @@ displayBoardInfo( int i, GrHwConfiguration *hwc )
                    ));
       }
   } else if (hwc->SSTs[i].type == GR_SSTTYPE_SST96) {
+    int tmuNum;
+
     GDBG_INFO((80,"SST board %d: 3Dfx Voodoo Rush\n", i));
     GDBG_INFO((80,"\tFBI Jr. with %d MB Frame Buffer\n",
                hwc->SSTs[i].sstBoard.SST96Config.fbRam
                ));
-    GDBG_INFO((80,"\tTexelfx chips:  1\n"));
+    GDBG_INFO((80,"\t%d Texelfx chips:\n",
+               hwc->SSTs[i].sstBoard.SST96Config.nTexelfx));
+    for (tmuNum = 0;
+         tmuNum < hwc->SSTs[i].sstBoard.SST96Config.nTexelfx;
+         tmuNum++) {
+      GDBG_INFO((80,"\t\tTexelfx %d: Rev %d, %d MB Texture\n", tmuNum,
+                 hwc->SSTs[i].sstBoard.SST96Config.tmuConfig.tmuRev,
+                 hwc->SSTs[i].sstBoard.SST96Config.tmuConfig.tmuRam));
+    }
 
   }
   else

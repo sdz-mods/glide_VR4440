@@ -321,6 +321,68 @@ secondary_packet:
     FSET_GW_ENTRY( fifoPtr, 0, 0.0f );
     fifoPtr  += 1;
   }
+
+  if (sst96EnvEnabled("SST96_DIRECT_TMU1_PARAMS") && dlp[1].addr != 0L) {
+#define DIRECT_FIFO_FSET(addr, data) \
+    do { \
+      *fifoPtr++ = (((FxU32)(addr) - (FxU32)gc->lfb_ptr) >> 2); \
+      *((float *)fifoPtr) = (data); \
+      fifoPtr++; \
+    } while (0)
+#define DIRECT_FIFO_SET(addr, data) \
+    do { \
+      *fifoPtr++ = (((FxU32)(addr) - (FxU32)gc->lfb_ptr) >> 2); \
+      *fifoPtr++ = (data); \
+    } while (0)
+
+    {
+      Sstregs *regHw = (Sstregs *)gc->reg_ptr;
+      volatile Sstregs *tmu0Hw = sst96GetTmuRegPtr(regHw, GR_TMU0);
+      volatile Sstregs *tmu1Hw = sst96GetTmuRegPtr(regHw, GR_TMU1);
+
+      if (!(gc->state.tmuMask & GR_TMUMASK_TMU0))
+        DIRECT_FIFO_SET(&tmu0Hw->textureMode, SST_TC_PASS | SST_TCA_PASS);
+      else if (sst96EnvEnabled("SST96_DIRECT_TMU0_TEXTUREMODE"))
+        DIRECT_FIFO_SET(&tmu0Hw->textureMode, gc->state.tmu_config[GR_TMU0].textureMode);
+      DIRECT_FIFO_SET(&tmu1Hw->texBaseAddr, gc->state.tmu_config[GR_TMU1].texBaseAddr);
+      DIRECT_FIFO_SET(&tmu1Hw->textureMode, gc->state.tmu_config[GR_TMU1].textureMode);
+      DIRECT_FIFO_SET(&tmu1Hw->tLOD, gc->state.tmu_config[GR_TMU1].tLOD);
+      DIRECT_FIFO_SET(&regHw->fbzColorPath, gc->state.fbi_config.fbzColorPath);
+    }
+
+    dlp++;
+    i = dlp->i;
+    while (i) {
+      float dpAB, dpBC, dpdx, dpdy;
+
+      fp = dlp->addr;
+      dpBC = FARRAY(fb,i);
+      dpdx = FARRAY(fa,i);
+      DIRECT_FIFO_FSET(fp, dpdx);
+      dpAB = dpdx - dpBC;
+      dpBC = dpBC - FARRAY(fc,i);
+      dpdx = dpAB * dyBC - dpBC * dyAB;
+      DIRECT_FIFO_FSET(((FxU8 *)fp) + DPDX_OFFSET, dpdx);
+      dpdy = dpBC * dxAB - dpAB * dxBC;
+      DIRECT_FIFO_FSET(((FxU8 *)fp) + DPDY_OFFSET, dpdy);
+      dlp++;
+      i = dlp->i;
+    }
+
+    DIRECT_FIFO_FSET(&((Sstregs *)gc->reg_ptr)->FtriangleCMD, _GlideRoot.pool.ftemp1);
+    if (((FxU32)fifoPtr) & 0x7) {
+      FSET_GW_ENTRY( fifoPtr, 0, 0.0f );
+      fifoPtr += 1;
+    }
+
+    GR_ASSERT(fifoPtr == gc->fifoData.hwDep.vg96FIFOData.fifoPtr);
+    GR_CHECK_SIZE();
+    _GlideRoot.stats.trisDrawn++;
+    return 1;
+#undef DIRECT_FIFO_FSET
+#undef DIRECT_FIFO_SET
+  }
+
   /* Start new packet
      note, there can only ever be two different packets 
      using gwHeaderNum++ would be more general, but this
@@ -693,6 +755,57 @@ secondary_packet:
   if (((FxU32) fifoPtr) & 0x7) {
     FSET_GW_ENTRY( fifoPtr, 0, 0.0f );
     fifoPtr  += 1;
+  }
+
+  if (sst96EnvEnabled("SST96_DIRECT_TMU1_PARAMS") && dlp[1].addr != 0L) {
+#define DIRECT_FIFO_FSET_NG(addr, data) \
+    do { \
+      *fifoPtr++ = (((FxU32)(addr) - (FxU32)gc->lfb_ptr) >> 2); \
+      *((float *)fifoPtr) = (data); \
+      fifoPtr++; \
+    } while (0)
+#define DIRECT_FIFO_SET_NG(addr, data) \
+    do { \
+      *fifoPtr++ = (((FxU32)(addr) - (FxU32)gc->lfb_ptr) >> 2); \
+      *fifoPtr++ = (data); \
+    } while (0)
+
+    {
+      Sstregs *regHw = (Sstregs *)gc->reg_ptr;
+      volatile Sstregs *tmu0Hw = sst96GetTmuRegPtr(regHw, GR_TMU0);
+      volatile Sstregs *tmu1Hw = sst96GetTmuRegPtr(regHw, GR_TMU1);
+
+      if (!(gc->state.tmuMask & GR_TMUMASK_TMU0))
+        DIRECT_FIFO_SET_NG(&tmu0Hw->textureMode, SST_TC_PASS | SST_TCA_PASS);
+      else if (sst96EnvEnabled("SST96_DIRECT_TMU0_TEXTUREMODE"))
+        DIRECT_FIFO_SET_NG(&tmu0Hw->textureMode, gc->state.tmu_config[GR_TMU0].textureMode);
+      DIRECT_FIFO_SET_NG(&tmu1Hw->texBaseAddr, gc->state.tmu_config[GR_TMU1].texBaseAddr);
+      DIRECT_FIFO_SET_NG(&tmu1Hw->textureMode, gc->state.tmu_config[GR_TMU1].textureMode);
+      DIRECT_FIFO_SET_NG(&tmu1Hw->tLOD, gc->state.tmu_config[GR_TMU1].tLOD);
+      DIRECT_FIFO_SET_NG(&regHw->fbzColorPath, gc->state.fbi_config.fbzColorPath);
+    }
+
+    dlp++;
+    i = dlp->i;
+    while (i) {
+      fp = dlp->addr;
+      DIRECT_FIFO_FSET_NG(fp, FARRAY(fa,i));
+      dlp++;
+      i = dlp->i;
+    }
+
+    DIRECT_FIFO_FSET_NG(&((Sstregs *)gc->reg_ptr)->FtriangleCMD,
+                        _GlideRoot.pool.ftemp1);
+    if (((FxU32)fifoPtr) & 0x7) {
+      FSET_GW_ENTRY( fifoPtr, 0, 0.0f );
+      fifoPtr += 1;
+    }
+
+    GR_ASSERT(fifoPtr == gc->fifoData.hwDep.vg96FIFOData.fifoPtr);
+    _GlideRoot.stats.trisDrawn++;
+    return 1;
+#undef DIRECT_FIFO_FSET_NG
+#undef DIRECT_FIFO_SET_NG
   }
 
   /* Start new packet
