@@ -127,7 +127,30 @@ typedef struct _REGVALS {
 typedef struct _REGINFO {
   REGVALS RegVals;
   int   bFreqFound;
+  int   iRequestedKHz;
+  int   iActualKHz;
+  unsigned char wN;
+  unsigned char wM;
+  unsigned char wL;
+  unsigned char wFR;
 } REGINFO, *LPREGINFO;
+
+typedef struct _AT3D_CLOCK_STATE {
+  FxBool active;
+  FxU32 requestedKHz;
+  FxU32 actualKHz;
+  FxU8 savedE8;
+  FxU8 savedE9;
+  FxU8 savedEA;
+  FxU8 programmedE8;
+  FxU8 programmedE9;
+  FxU8 programmedEA;
+  FxU8 readbackE8;
+  FxU8 readbackE9;
+  FxU8 readbackEA;
+} AT3D_CLOCK_STATE;
+
+static AT3D_CLOCK_STATE at3dClockState;
 
 /* MCLK Constants */
 static const unsigned char bBypass = 0;
@@ -291,47 +314,143 @@ void pageflippingSwapWait(void) {
   Return:
   FXTRUE if successful.
   -------------------------------------------------------------------*/
+#define AT3D_REF_CLOCK_HZ 14318180UL
+#define AT3D_MIN_CLOCK_MHZ 25
+#define AT3D_MAX_CLOCK_MHZ 100
+
+static FxU32
+initAT3DClockHz(FxU32 n, FxU32 m, FxU32 l)
+{
+  FxU32 divisor = (m + 1) << l;
+  FxU32 numerator = (n + 1) * AT3D_REF_CLOCK_HZ;
+
+  return (numerator + (divisor >> 1)) / divisor;
+}
+
+static FxU32
+initAT3DAbsDiff(FxU32 a, FxU32 b)
+{
+  return (a > b) ? (a - b) : (b - a);
+}
+
+static FxU8
+initAT3DFrequencyRange(FxU32 vcoHz)
+{
+  FxU32 bestDelta = 0xffffffffUL;
+  FxU8 bestRange = ClockTableAT3D[0].wFR;
+  int i;
+
+  /* Alliance did not publish the frequency-range boundaries.  Select the
+   * range from the closest validated VCO point in its original table. */
+  for (i = 0; ClockTableAT3D[i].iMclk != 0; i++) {
+    FxU32 referenceHz = initAT3DClockHz(ClockTableAT3D[i].wN,
+                                       ClockTableAT3D[i].wM,
+                                       ClockTableAT3D[i].wL);
+    FxU32 referenceVcoHz = referenceHz << ClockTableAT3D[i].wL;
+    FxU32 delta = initAT3DAbsDiff(vcoHz, referenceVcoHz);
+
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      bestRange = ClockTableAT3D[i].wFR;
+    }
+  }
+
+  return bestRange;
+}
+
+static FxBool
+initAT3DSynthesizeClock(int iFreq, CLOCK_TABLE *result)
+{
+  FxU32 targetHz;
+  FxU32 bestError = 0xffffffffUL;
+  FxU32 bestActualHz = 0;
+  int bestN = -1;
+  int bestM = -1;
+  int bestL = -1;
+  int n, m, l;
+
+  if (iFreq < AT3D_MIN_CLOCK_MHZ || iFreq > AT3D_MAX_CLOCK_MHZ)
+    return FXFALSE;
+
+  targetHz = (FxU32)iFreq * 1000000UL;
+  for (l = 0; l <= 3; l++) {
+    for (m = 1; m <= 5; m++) {
+      for (n = 8; n <= 127; n++) {
+        FxU32 actualHz = initAT3DClockHz((FxU32)n, (FxU32)m, (FxU32)l);
+        FxU32 vcoHz = actualHz << l;
+        FxU32 error;
+
+        if (vcoHz < 185000000UL || vcoHz > 370000000UL)
+          continue;
+
+        error = initAT3DAbsDiff(targetHz, actualHz);
+        if (error < bestError ||
+            (error == bestError && (bestM < 0 || m < bestM))) {
+          bestError = error;
+          bestActualHz = actualHz;
+          bestN = n;
+          bestM = m;
+          bestL = l;
+        }
+      }
+    }
+  }
+
+  if (bestN < 0)
+    return FXFALSE;
+
+  result->iMclk = iFreq;
+  result->wN = (unsigned char)bestN;
+  result->wM = (unsigned char)bestM;
+  result->wL = (unsigned char)bestL;
+  result->wFR = initAT3DFrequencyRange(bestActualHz << bestL);
+  return FXTRUE;
+}
+
 REGINFO
 initAT3DGetRegVals(int iFreq)
 {
 #define FN_NAME "initAT3DGetRegVals"
-  /* Get the E8,E9, and EA values for given frequency. */
-  const CLOCK_TABLE *lpClockTable = (const CLOCK_TABLE *) ClockTableAT3D;
+  const CLOCK_TABLE *selected = NULL;
+  CLOCK_TABLE synthesized;
+  REGINFO RegInfo;
   int i;
-  REGINFO RegInfo; 
-  BYTE bN, bM, bL, bFreqRange;
-  
-  /* Scan for MCLK value from array. */
-  i = 0;
-  while( lpClockTable[i].iMclk != 0 ) {
-    if( lpClockTable[i].iMclk == iFreq )
+
+  for (i = 0; ClockTableAT3D[i].iMclk != 0; i++) {
+    if (ClockTableAT3D[i].iMclk == iFreq) {
+      selected = &ClockTableAT3D[i];
       break;
-    i++;
+    }
   }
-  
-  /* Check if there is no MCLK matched. */
-  if( lpClockTable[i].iMclk == 0 )  {
-    RegInfo.bFreqFound = FXFALSE;
-    i=0;
-  } else {
-    RegInfo.bFreqFound = FXTRUE;
+
+  if (selected == NULL && initAT3DSynthesizeClock(iFreq, &synthesized))
+    selected = &synthesized;
+
+  RegInfo.bFreqFound = (selected != NULL);
+  RegInfo.iRequestedKHz = iFreq * 1000;
+  RegInfo.iActualKHz = 0;
+  RegInfo.wN = RegInfo.wM = RegInfo.wL = RegInfo.wFR = 0;
+  RegInfo.RegVals.E8 = RegInfo.RegVals.E9 = RegInfo.RegVals.EA = 0;
+
+  if (selected != NULL) {
+    FxU32 actualHz = initAT3DClockHz(selected->wN, selected->wM,
+                                    selected->wL);
+
+    RegInfo.iActualKHz = (int)((actualHz + 500UL) / 1000UL);
+    RegInfo.wN = selected->wN;
+    RegInfo.wM = selected->wM;
+    RegInfo.wL = selected->wL;
+    RegInfo.wFR = selected->wFR;
+    RegInfo.RegVals.E8 = bBypass +
+      (bPowerOff << 1) +
+        (selected->wL << 2) +
+          (selected->wFR << 4) +
+            (bHighSpeed << 7);
+    RegInfo.RegVals.E9 = selected->wM;
+    RegInfo.RegVals.EA = selected->wN;
   }
-  
-  bN = lpClockTable[i].wN;
-  bM = lpClockTable[i].wM;
-  bL = lpClockTable[i].wL;
-  bFreqRange = lpClockTable[i].wFR;
-  
-  /* Assign values to E8-EA... */
-  RegInfo.RegVals.E8 = bBypass +
-    (bPowerOff << 1) +
-      (bL << 2) + 
-        (bFreqRange << 4) +
-          (bHighSpeed << 7);
-  RegInfo.RegVals.E9 = bM;
-  RegInfo.RegVals.EA = bN;
-  
-  return(RegInfo);
+
+  return RegInfo;
 
 #undef FN_NAME
 } /* GetRegVals */
@@ -351,62 +470,48 @@ initAT3DGetRegVals(int iFreq)
   Return:
   FXTRUE if successful.
   -------------------------------------------------------------------*/
+static void
+initAT3DWriteMClockRegs(LPCOP at3dRegs, FxU8 targetE8,
+                       FxU8 targetE9, FxU8 targetEA)
+{
+#define FN_NAME "initAT3DWriteMClockRegs"
+  FxU8 oE8, oE9, oEA;
+  FxU8 safeE8;
+
+  oE8 = GET8AT3D(at3dRegs->MCLK_Ctrl);
+  oE9 = GET8AT3D(at3dRegs->MCLK_M);
+  oEA = GET8AT3D(at3dRegs->MCLK_N);
+
+  /* Use L=3 while changing M and N to avoid a transient illegal clock. */
+  safeE8 = oE8 | 0x8c;
+  SETAT3D(at3dRegs->MCLK_Ctrl, safeE8);
+  SETAT3D(at3dRegs->MCLK_M, oE9);
+  SETAT3D(at3dRegs->MCLK_N, oEA);
+  SETAT3D(at3dRegs->MCLK_M, targetE9);
+  SETAT3D(at3dRegs->MCLK_N, targetEA);
+  SETAT3D(at3dRegs->MCLK_Ctrl, targetE8);
+  SETAT3D(at3dRegs->MCLK_M, targetE9);
+  SETAT3D(at3dRegs->MCLK_N, targetEA);
+
+#undef FN_NAME
+}
+
 static FxBool
 initAT3DSetMClock(int iMclk, LPCOP at3dRegs)
 {
 #define FN_NAME "initAT3DSetMClock"
   REGINFO RegInfo;
-  FxU8 oE8, oE9, oEA;
-  FxU8 nE8, nE9, nEA;
-  
-  GDBG_INFO((80, "%s:\n", FN_NAME));
 
-  /* Get values for E8, E9, EA etc. based on iMclk. */
+  GDBG_INFO((80, "%s:\n", FN_NAME));
   RegInfo = initAT3DGetRegVals(iMclk);
-  
-  if(!RegInfo.bFreqFound)
-    return(FXFALSE);
-  
-  /* Read in the current 3  Bytes starting at 0E8 */
-  oE8 = GET8AT3D(at3dRegs->MCLK_Ctrl);
-  oE9 = GET8AT3D(at3dRegs->MCLK_M);
-  oEA = GET8AT3D(at3dRegs->MCLK_N);
-  
-  /*
-   ** Set new values....
-   **
-   ** Assign new E8-EA... (with L=3, and high speed bit set)
-   ** This is done to avoid a temporary illegal setting of the mclk!
-   */
-  nE8 = (oE8 | 0x8C);
-  nE9 = oE9;
-  nEA = oEA;
-  SETAT3D(at3dRegs->MCLK_Ctrl, nE8);
-  SETAT3D(at3dRegs->MCLK_M, nE9);
-  SETAT3D(at3dRegs->MCLK_N, nEA);
-  
-  /*
-   **   Assign new E8-EA... (with desired M and N values)
-   ** This is done to avoid a temporary illegal setting of the mclk!
-   */
-  nE8 = nE8;
-  nE9 = RegInfo.RegVals.E9;
-  nEA = RegInfo.RegVals.EA;
-  SETAT3D(at3dRegs->MCLK_Ctrl, nE8);
-  SETAT3D(at3dRegs->MCLK_M, nE9);
-  SETAT3D(at3dRegs->MCLK_N, nEA);
-  
-  /* Assign new E8-EA... (with correct L value) */
-  nE8 = RegInfo.RegVals.E8;
-  nE9 = nE9;
-  nEA = nEA;
-  SETAT3D(at3dRegs->MCLK_Ctrl,nE8);
-  SETAT3D(at3dRegs->MCLK_M, nE9);
-  SETAT3D(at3dRegs->MCLK_N, nEA);
-  
+  if (!RegInfo.bFreqFound)
+    return FXFALSE;
+
+  initAT3DWriteMClockRegs(at3dRegs, RegInfo.RegVals.E8,
+                         RegInfo.RegVals.E9, RegInfo.RegVals.EA);
   GDBG_INFO((80, "%s:  Returning FXTRUE\n", FN_NAME));
 
-  return(FXTRUE);
+  return FXTRUE;
   
 #undef FN_NAME
 } /* initAT3DSetMClock */
@@ -437,6 +542,153 @@ initAT3DWait( FxI32 mSec)
   } while ((t1 - t0) < mSec);
 #undef FN_NAME
 } /* initAT3DWait */
+
+static void
+initAT3DClockTrace(const char *event)
+{
+  const char *enabled = myGetenv("SST96_CLOCK_TRACE");
+  const char *path;
+  FxU32 savedKHz = 0;
+  FILE *f;
+
+  if (enabled == NULL || enabled[0] == '\0' || enabled[0] == '0')
+    return;
+
+  path = myGetenv("SST96_CLOCK_TRACE_FILE");
+  if (path == NULL || path[0] == '\0')
+    path = "rush_clock.log";
+
+  f = fopen(path, "a");
+  if (f == NULL)
+    return;
+
+  if (at3dClockState.active && at3dClockState.savedE9 <= 5 &&
+      at3dClockState.savedEA <= 127) {
+    savedKHz = (initAT3DClockHz(at3dClockState.savedEA,
+                               at3dClockState.savedE9,
+                               (at3dClockState.savedE8 >> 2) & 0x3) +
+                500UL) / 1000UL;
+  }
+
+  fprintf(f,
+          "%s active=%u requested_khz=%lu actual_khz=%lu saved_khz=%lu "
+          "pll_n=%u pll_m=%u pll_l=%u pll_range=%u "
+          "saved=%02x/%02x/%02x programmed=%02x/%02x/%02x "
+          "readback=%02x/%02x/%02x\n",
+          event,
+          (unsigned int)at3dClockState.active,
+          (unsigned long)at3dClockState.requestedKHz,
+          (unsigned long)at3dClockState.actualKHz,
+          (unsigned long)savedKHz,
+          (unsigned int)at3dClockState.programmedEA,
+          (unsigned int)at3dClockState.programmedE9,
+          (unsigned int)((at3dClockState.programmedE8 >> 2) & 0x3),
+          (unsigned int)((at3dClockState.programmedE8 >> 4) & 0x7),
+          (unsigned int)at3dClockState.savedE8,
+          (unsigned int)at3dClockState.savedE9,
+          (unsigned int)at3dClockState.savedEA,
+          (unsigned int)at3dClockState.programmedE8,
+          (unsigned int)at3dClockState.programmedE9,
+          (unsigned int)at3dClockState.programmedEA,
+          (unsigned int)at3dClockState.readbackE8,
+          (unsigned int)at3dClockState.readbackE9,
+          (unsigned int)at3dClockState.readbackEA);
+  fclose(f);
+}
+
+static FxBool
+initAT3DApplyClockOverride(InitRegisterDesc *rd)
+{
+  const char *value = myGetenv("SST96_GRXCLK");
+  char *end;
+  long requestedMHz;
+  REGINFO regInfo;
+  LPCOP at3dRegs;
+
+  if (value == NULL || value[0] == '\0')
+    value = myGetenv("SST_GRXCLK");
+  if (value == NULL || value[0] == '\0')
+    value = myGetenv("SST96_MEMCLOCK");
+  if (value == NULL || value[0] == '\0')
+    return FXTRUE;
+
+  requestedMHz = strtol(value, &end, 0);
+  while (*end == ' ' || *end == '\t') end++;
+  if (*end != '\0' || requestedMHz < AT3D_MIN_CLOCK_MHZ ||
+      requestedMHz > AT3D_MAX_CLOCK_MHZ) {
+    at3dClockState.requestedKHz = (FxU32)requestedMHz * 1000UL;
+    initAT3DClockTrace("invalid");
+    return FXFALSE;
+  }
+
+  regInfo = initAT3DGetRegVals((int)requestedMHz);
+  if (!regInfo.bFreqFound) {
+    at3dClockState.requestedKHz = (FxU32)requestedMHz * 1000UL;
+    initAT3DClockTrace("unavailable");
+    return FXFALSE;
+  }
+
+  at3dRegs = (LPCOP)rd->hwDep.VG96RegDesc.partnerRegPtr;
+  if (at3dRegs == NULL)
+    return FXFALSE;
+
+  if (!at3dClockState.active) {
+    at3dClockState.savedE8 = GET8AT3D(at3dRegs->MCLK_Ctrl);
+    at3dClockState.savedE9 = GET8AT3D(at3dRegs->MCLK_M);
+    at3dClockState.savedEA = GET8AT3D(at3dRegs->MCLK_N);
+  }
+
+  at3dClockState.requestedKHz = (FxU32)regInfo.iRequestedKHz;
+  at3dClockState.actualKHz = (FxU32)regInfo.iActualKHz;
+  at3dClockState.programmedE8 = regInfo.RegVals.E8;
+  at3dClockState.programmedE9 = regInfo.RegVals.E9;
+  at3dClockState.programmedEA = regInfo.RegVals.EA;
+  at3dClockState.active = FXTRUE;
+
+  initAT3DWriteMClockRegs(at3dRegs, regInfo.RegVals.E8,
+                         regInfo.RegVals.E9, regInfo.RegVals.EA);
+  initAT3DWait(10);
+  at3dClockState.readbackE8 = GET8AT3D(at3dRegs->MCLK_Ctrl);
+  at3dClockState.readbackE9 = GET8AT3D(at3dRegs->MCLK_M);
+  at3dClockState.readbackEA = GET8AT3D(at3dRegs->MCLK_N);
+
+  if (at3dClockState.readbackE8 != at3dClockState.programmedE8 ||
+      at3dClockState.readbackE9 != at3dClockState.programmedE9 ||
+      at3dClockState.readbackEA != at3dClockState.programmedEA) {
+    initAT3DClockTrace("readback_failed");
+    initAT3DWriteMClockRegs(at3dRegs, at3dClockState.savedE8,
+                           at3dClockState.savedE9,
+                           at3dClockState.savedEA);
+    at3dClockState.active = FXFALSE;
+    return FXFALSE;
+  }
+
+  initAT3DClockTrace("applied");
+  return FXTRUE;
+}
+
+static void
+initAT3DRestoreClock(InitRegisterDesc *rd)
+{
+  LPCOP at3dRegs;
+
+  if (!at3dClockState.active)
+    return;
+
+  at3dRegs = (LPCOP)rd->hwDep.VG96RegDesc.partnerRegPtr;
+  if (at3dRegs == NULL)
+    return;
+
+  initAT3DWriteMClockRegs(at3dRegs, at3dClockState.savedE8,
+                         at3dClockState.savedE9,
+                         at3dClockState.savedEA);
+  initAT3DWait(10);
+  at3dClockState.readbackE8 = GET8AT3D(at3dRegs->MCLK_Ctrl);
+  at3dClockState.readbackE9 = GET8AT3D(at3dRegs->MCLK_M);
+  at3dClockState.readbackEA = GET8AT3D(at3dRegs->MCLK_N);
+  initAT3DClockTrace("restored");
+  at3dClockState.active = FXFALSE;
+}
 
 /*-------------------------------------------------------------------
   Function: initAT3D2DIdle
@@ -861,6 +1113,9 @@ INITAT3DENTRY(initAT3DEnableRegs,FxBool,(InitRegisterDesc *rd))
 
 #endif /* __WIN32__ */
 
+  if (!initAT3DApplyClockOverride(rd))
+    return FXFALSE;
+
   return FXTRUE;
 
 #undef FN_NAME
@@ -954,6 +1209,8 @@ INITAT3DENTRY(initAT3DDisableRegs,FxBool,(InitRegisterDesc *rd))
     } /* end for i */
     tiling = 0;
   }
+
+  initAT3DRestoreClock(rd);
 
   GDBG_INFO((80, "%s:  returning FXTRUE\n", FN_NAME));
   

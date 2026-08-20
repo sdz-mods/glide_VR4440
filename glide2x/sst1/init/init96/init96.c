@@ -1168,6 +1168,9 @@ init96SetupRendering(InitRegisterDesc *regDesc, GrScreenResolution_t sRes)
     int ftClkDel;
 
     envp = myGetenv("SST96_FT_CLK_DEL");
+    if( !envp ) {
+      envp = myGetenv("SST_FT_CLK_DEL");
+    }
     if (envp && (sscanf(envp, "%i", &ftClkDel) == 1)) {
       regVal = (regVal & ~0x0f00) | ((ftClkDel & 0xf) << 8);
     }
@@ -1203,7 +1206,13 @@ init96SetupRendering(InitRegisterDesc *regDesc, GrScreenResolution_t sRes)
       }
       envp = myGetenv((tmu == 0) ? "SST96_TF0_CLK_DEL" : "SST96_TF1_CLK_DEL");
       if( !envp ) {
+        envp = myGetenv((tmu == 0) ? "SST_TF0_CLK_DEL" : "SST_TF1_CLK_DEL");
+      }
+      if( !envp ) {
         envp = myGetenv("SST96_TF_CLK_DEL");
+      }
+      if( !envp ) {
+        envp = myGetenv("SST_TF_CLK_DEL");
       }
       if( envp ) {
         int tfClkDel;
@@ -1212,6 +1221,35 @@ init96SetupRendering(InitRegisterDesc *regDesc, GrScreenResolution_t sRes)
           trexinit1 = (trexinit1 & ~0x0f000) | ((tfClkDel & 0xf) << 12);
         }
       }
+
+      envp = myGetenv((tmu == 0) ? "SST96_TT0_CLK_DEL" : "SST96_TT1_CLK_DEL");
+      if( !envp ) {
+        envp = myGetenv((tmu == 0) ? "SST_TT0_CLK_DEL" : "SST_TT1_CLK_DEL");
+      }
+      if( !envp ) {
+        envp = myGetenv((tmu == 0) ? "SST96_TT0_FIFO_SIL" : "SST96_TT1_FIFO_SIL");
+      }
+      if( !envp ) {
+        envp = myGetenv("SST96_TT_CLK_DEL");
+      }
+      if( !envp ) {
+        envp = myGetenv("SST_TT_CLK_DEL");
+      }
+      if( !envp ) {
+        envp = myGetenv("SST96_TT_FIFO_SIL");
+      }
+      if( envp ) {
+        int ttFifoSil;
+
+        if( sscanf(envp, "%i", &ttFifoSil) == 1 ) {
+          /* TREX calls this field TT_FIFO_SIL.  Its exact phase semantics
+           * are unpublished, but it is the only multi-TREX timing nibble. */
+          trexinit1 = (trexinit1 & ~0x00780) | ((ttFifoSil & 0xf) << 7);
+        }
+      }
+
+      sst96Trace("init96SetVideo: tmu=%u trexInit0=0x%08x trexInit1=0x%08x\n",
+                 tmu, trexinit0, trexinit1);
 
       SET(trex->trexInit0, trexinit0);
       SET(trex->trexInit1, trexinit1);

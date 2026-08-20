@@ -63,15 +63,32 @@ normal operation. Integer values accept decimal or `0x` hexadecimal notation.
 | `SST96_TRACE_INIT=1` | Writes initialization tracing to `rush_init96.log`. |
 | `SST96_TRACE_FILE=path` | Changes the initialization trace filename. |
 | `SST96_TRACE_TMU_STATE=1` | Writes TMU state tracing to `rush_tmu_state.log`. |
-| `SST96_FT_CLK_DEL=n` | Overrides the 4-bit FJR-to-TMU clock delay. |
-| `SST96_TF_CLK_DEL=n` | Overrides the 4-bit TF delay for both TMUs. |
+| `SST96_GRXCLK=25..100` | Sets the Rush clock in integer MHz steps. |
+| `SST96_CLOCK_TRACE=1` | Logs requested/actual clock, PLL values, readback, and restoration. |
+| `SST96_CLOCK_TRACE_FILE=path` | Changes the clock trace filename from `rush_clock.log`. |
+| `SST96_FT_CLK_DEL=n` | Overrides the 4-bit FJR-to-TMU clock delay; default 6. |
+| `SST96_TF_CLK_DEL=n` | Overrides the 4-bit TF delay for both TMUs; default 6. |
 | `SST96_TF0_CLK_DEL=n` | Overrides the TF delay for TMU0. |
 | `SST96_TF1_CLK_DEL=n` | Overrides the TF delay for TMU1. |
+| `SST96_TT_CLK_DEL=n` | Overrides both TMUs' 4-bit `TT_FIFO_SIL` field; default 8. |
+| `SST96_TT0_CLK_DEL=n` | Overrides TMU0's `TT_FIFO_SIL` field. |
+| `SST96_TT1_CLK_DEL=n` | Overrides TMU1's `TT_FIFO_SIL` field. |
 | `SST_TREX0INIT0`, `SST_TREX1INIT0` | Override each TMU's `trexInit0`; normal value is `0x05441`. |
 | `SST_TREX0INIT1` | Overrides TMU0 `trexInit1`; normal value is `0x0643c`. |
 | `SST_TREX1INIT1` | Overrides TMU1 `trexInit1`; normal value is `0x3643c`. |
 | `SST96_TMU1_CHIP_FIELD` | Overrides the TMU1 chip field with `0x4` or diagnostic `0x8`. |
 | `SST96_PROBE_TMU_MEMORY=1` | Enables the old destructive memory detector. Do not use normally. |
+
+Clock requests matching the original Alliance table retain its PLL values;
+missing integer frequencies are synthesized. With `SST96_GRXCLK` unset, Glide
+does not change the active clock. An overridden clock is read back after
+programming and the original PLL values are restored when Glide closes.
+`SST_GRXCLK` and `SST96_MEMCLOCK` are lower-priority clock aliases.
+
+The equivalent Voodoo1-style `SST_FT_CLK_DEL`, `SST_TF_CLK_DEL`,
+`SST_TF0_CLK_DEL`, `SST_TF1_CLK_DEL`, and `SST_TT*` names are accepted as
+lower-priority timing aliases. `TT_CLK_DEL` is a convenient tuning name for the
+TREX `TT_FIFO_SIL` field; its exact phase behavior is not documented.
 
 The source also retains `SST96_RUNTIME_TMU1_CHIP_FIELD`,
 `SST96_DIRECT_TMU1_PARAMS`, `SST96_DIRECT_TMU0_TEXTUREMODE`,
