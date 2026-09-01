@@ -23,6 +23,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #ifndef __linux__
 #include <conio.h>
 #endif
@@ -80,6 +81,7 @@ static inline void _outp_asm (unsigned short _port, unsigned char _data) {
 #include "atvga.h"
 #include "initvga.h"
 #include "physical.h"
+#include <math.h>
 
 /*
 **  Static Globals   
@@ -151,6 +153,25 @@ typedef struct _AT3D_CLOCK_STATE {
 } AT3D_CLOCK_STATE;
 
 static AT3D_CLOCK_STATE at3dClockState;
+
+#define AT3D_GAMMA_ENTRIES 256
+#define AT3D_DAC_READ_ADDRESS 0x3c7
+#define AT3D_DAC_WRITE_ADDRESS 0x3c8
+#define AT3D_DAC_DATA 0x3c9
+#define AT3D_DAC_DESKTOP_CORRECTION_MASK 0x03
+#define AT3D_DAC_DESKTOP_PRIMARY 0x01
+#define AT3D_DAC_VWINDOW_CORRECTION_MASK 0x0c
+#define AT3D_DAC_VWINDOW_PRIMARY 0x04
+#define AT3D_DAC_HOST_DATA_8BIT 0x10
+#define AT3D_DAC_HOST_SECONDARY 0x20
+
+typedef struct _AT3D_GAMMA_STATE {
+  FxBool active;
+  FxU8 savedControl;
+  FxU8 savedPalette[AT3D_GAMMA_ENTRIES][3];
+} AT3D_GAMMA_STATE;
+
+static AT3D_GAMMA_STATE at3dGammaState;
 
 /* MCLK Constants */
 static const unsigned char bBypass = 0;
@@ -797,6 +818,255 @@ initAT3DEnableMemoryRefresh(LPCOP at3dRegs)
 
 #undef FN_NAME
 } /* initAT3DEnableMemoryRefresh */
+
+static void
+initAT3DGammaTrace(const char *format, ...)
+{
+  const char *enabled = myGetenv("SST96_GAMMA_TRACE");
+  const char *path;
+  FILE *f;
+  va_list args;
+
+  if (enabled == NULL || enabled[0] == '\0' || enabled[0] == '0')
+    return;
+
+  path = myGetenv("SST96_GAMMA_TRACE_FILE");
+  if (path == NULL || path[0] == '\0')
+    path = "rush_gamma.log";
+
+  f = fopen(path, "a");
+  if (f == NULL)
+    return;
+
+  va_start(args, format);
+  vfprintf(f, format, args);
+  va_end(args);
+  fclose(f);
+}
+
+static FxU8
+initAT3DPaletteAccessControl(FxU8 control)
+{
+  return (FxU8)((control | AT3D_DAC_HOST_DATA_8BIT) &
+                ~AT3D_DAC_HOST_SECONDARY);
+}
+
+static void
+initAT3DReadPalette(FxU8 palette[AT3D_GAMMA_ENTRIES][3])
+{
+  int i;
+
+  _outp(AT3D_DAC_READ_ADDRESS, 0);
+  for (i = 0; i < AT3D_GAMMA_ENTRIES; i++) {
+    palette[i][0] = _inp(AT3D_DAC_DATA);
+    palette[i][1] = _inp(AT3D_DAC_DATA);
+    palette[i][2] = _inp(AT3D_DAC_DATA);
+  }
+}
+
+static void
+initAT3DWritePalette(const FxU8 palette[AT3D_GAMMA_ENTRIES][3])
+{
+  int i;
+
+  _outp(AT3D_DAC_WRITE_ADDRESS, 0);
+  for (i = 0; i < AT3D_GAMMA_ENTRIES; i++) {
+    _outp(AT3D_DAC_DATA, palette[i][0]);
+    _outp(AT3D_DAC_DATA, palette[i][1]);
+    _outp(AT3D_DAC_DATA, palette[i][2]);
+  }
+}
+
+static void
+initAT3DReadPaletteEntry(int index, FxU8 rgb[3])
+{
+  _outp(AT3D_DAC_READ_ADDRESS, (FxU8)index);
+  rgb[0] = _inp(AT3D_DAC_DATA);
+  rgb[1] = _inp(AT3D_DAC_DATA);
+  rgb[2] = _inp(AT3D_DAC_DATA);
+}
+
+static FxBool
+initAT3DSaveGamma(LPCOP at3dRegs)
+{
+#define FN_NAME "initAT3DSaveGamma"
+  FxU8 accessControl;
+
+  if (at3dGammaState.active)
+    return FXTRUE;
+
+  at3dGammaState.savedControl = GET8AT3D(at3dRegs->RamdacControl);
+  accessControl = initAT3DPaletteAccessControl(at3dGammaState.savedControl);
+  SETAT3D(at3dRegs->RamdacControl, accessControl);
+  initAT3DReadPalette(at3dGammaState.savedPalette);
+  SETAT3D(at3dRegs->RamdacControl, at3dGammaState.savedControl);
+  at3dGammaState.active = FXTRUE;
+
+  initAT3DGammaTrace("save control=0x%02x\n",
+                     (unsigned)at3dGammaState.savedControl);
+  return FXTRUE;
+#undef FN_NAME
+}
+
+static void
+initAT3DTraceGammaReadback(LPCOP at3dRegs, FxU8 displayControl)
+{
+#define FN_NAME "initAT3DTraceGammaReadback"
+  static const int sampleIndices[] = { 0, 64, 128, 192, 255 };
+  const char *enabled = myGetenv("SST96_GAMMA_TRACE");
+  FxU8 rgb[3];
+  FxU8 accessControl;
+  int i;
+
+  if (enabled == NULL || enabled[0] == '\0' || enabled[0] == '0')
+    return;
+
+  accessControl = initAT3DPaletteAccessControl(displayControl);
+  SETAT3D(at3dRegs->RamdacControl, accessControl);
+  for (i = 0; i < (int)(sizeof(sampleIndices) / sizeof(sampleIndices[0])); i++) {
+    initAT3DReadPaletteEntry(sampleIndices[i], rgb);
+    initAT3DGammaTrace("readback index=%u rgb=%u,%u,%u\n",
+                       (unsigned)sampleIndices[i],
+                       (unsigned)rgb[0], (unsigned)rgb[1],
+                       (unsigned)rgb[2]);
+  }
+  SETAT3D(at3dRegs->RamdacControl, displayControl);
+#undef FN_NAME
+}
+
+static FxBool
+initAT3DProgramGamma(LPCOP at3dRegs,
+                     const FxU8 palette[AT3D_GAMMA_ENTRIES][3])
+{
+#define FN_NAME "initAT3DProgramGamma"
+  FxU8 control;
+  FxU8 accessControl;
+  FxU8 displayControl;
+
+  if (!initAT3DSaveGamma(at3dRegs))
+    return FXFALSE;
+
+  control = GET8AT3D(at3dRegs->RamdacControl);
+  accessControl = initAT3DPaletteAccessControl(control);
+  SETAT3D(at3dRegs->RamdacControl, accessControl);
+  initAT3DWritePalette(palette);
+
+  displayControl = (FxU8)((control &
+                    ~(AT3D_DAC_DESKTOP_CORRECTION_MASK |
+                      AT3D_DAC_VWINDOW_CORRECTION_MASK)) |
+                    AT3D_DAC_DESKTOP_PRIMARY |
+                    AT3D_DAC_VWINDOW_PRIMARY);
+  SETAT3D(at3dRegs->RamdacControl, displayControl);
+  initAT3DTraceGammaReadback(at3dRegs, displayControl);
+  initAT3DGammaTrace("program control=0x%02x\n",
+                     (unsigned)displayControl);
+  return FXTRUE;
+#undef FN_NAME
+}
+
+static FxU8
+initAT3DClampPaletteValue(FxU32 value)
+{
+  return (FxU8)((value > 255U) ? 255U : value);
+}
+
+INITAT3DENTRY(initAT3DGammaRGB, FxBool,
+              (InitRegisterDesc *rd, double gammaR,
+               double gammaG, double gammaB))
+{
+#define FN_NAME "initAT3DGammaRGB"
+  LPCOP at3dRegs;
+  FxU8 palette[AT3D_GAMMA_ENTRIES][3];
+  int i;
+
+  if (rd == NULL || rd->hwDep.VG96RegDesc.partnerRegPtr == NULL ||
+      gammaR <= 0.0 || gammaG <= 0.0 || gammaB <= 0.0 ||
+      gammaR > 16.0 || gammaG > 16.0 || gammaB > 16.0)
+    return FXFALSE;
+
+  at3dRegs = (LPCOP)rd->hwDep.VG96RegDesc.partnerRegPtr;
+  at3dRegPtr = at3dRegs;
+  for (i = 0; i < AT3D_GAMMA_ENTRIES; i++) {
+    double input = (double)i / 255.0;
+
+    palette[i][0] = (FxU8)(pow(input, 1.0 / gammaR) * 255.0 + 0.5);
+    palette[i][1] = (FxU8)(pow(input, 1.0 / gammaG) * 255.0 + 0.5);
+    palette[i][2] = (FxU8)(pow(input, 1.0 / gammaB) * 255.0 + 0.5);
+  }
+
+  initAT3DGammaTrace("gamma rgb=%.4f,%.4f,%.4f\n",
+                     gammaR, gammaG, gammaB);
+  return initAT3DProgramGamma(at3dRegs, palette);
+#undef FN_NAME
+}
+
+INITAT3DENTRY(initAT3DGammaTable, FxBool,
+              (InitRegisterDesc *rd, FxU32 nentries,
+               FxU32 *r, FxU32 *g, FxU32 *b))
+{
+#define FN_NAME "initAT3DGammaTable"
+  LPCOP at3dRegs;
+  FxU8 palette[AT3D_GAMMA_ENTRIES][3];
+  int i;
+
+  if (rd == NULL || rd->hwDep.VG96RegDesc.partnerRegPtr == NULL ||
+      nentries == 0 || nentries > AT3D_GAMMA_ENTRIES ||
+      r == NULL || g == NULL || b == NULL)
+    return FXFALSE;
+
+  at3dRegs = (LPCOP)rd->hwDep.VG96RegDesc.partnerRegPtr;
+  at3dRegPtr = at3dRegs;
+  for (i = 0; i < AT3D_GAMMA_ENTRIES; i++) {
+    FxU32 position;
+    FxU32 lower;
+    FxU32 upper;
+    FxU32 fraction;
+
+    if (nentries == 1) {
+      lower = upper = 0;
+      fraction = 0;
+    } else {
+      position = (FxU32)i * (nentries - 1);
+      lower = position / 255U;
+      upper = (lower + 1 < nentries) ? lower + 1 : lower;
+      fraction = position % 255U;
+    }
+
+    palette[i][0] = initAT3DClampPaletteValue(
+      (r[lower] * (255U - fraction) + r[upper] * fraction + 127U) / 255U);
+    palette[i][1] = initAT3DClampPaletteValue(
+      (g[lower] * (255U - fraction) + g[upper] * fraction + 127U) / 255U);
+    palette[i][2] = initAT3DClampPaletteValue(
+      (b[lower] * (255U - fraction) + b[upper] * fraction + 127U) / 255U);
+  }
+
+  initAT3DGammaTrace("gamma table entries=%u\n", (unsigned)nentries);
+  return initAT3DProgramGamma(at3dRegs, palette);
+#undef FN_NAME
+}
+
+INITAT3DENTRY(initAT3DRestoreGamma, void, (InitRegisterDesc *rd))
+{
+#define FN_NAME "initAT3DRestoreGamma"
+  LPCOP at3dRegs;
+  FxU8 accessControl;
+
+  if (!at3dGammaState.active || rd == NULL ||
+      rd->hwDep.VG96RegDesc.partnerRegPtr == NULL)
+    return;
+
+  at3dRegs = (LPCOP)rd->hwDep.VG96RegDesc.partnerRegPtr;
+  at3dRegPtr = at3dRegs;
+  accessControl = initAT3DPaletteAccessControl(
+                    GET8AT3D(at3dRegs->RamdacControl));
+  SETAT3D(at3dRegs->RamdacControl, accessControl);
+  initAT3DWritePalette(at3dGammaState.savedPalette);
+  SETAT3D(at3dRegs->RamdacControl, at3dGammaState.savedControl);
+  initAT3DGammaTrace("restore control=0x%02x\n",
+                     (unsigned)at3dGammaState.savedControl);
+  at3dGammaState.active = FXFALSE;
+#undef FN_NAME
+}
 
 
 /*
@@ -1617,7 +1887,7 @@ INITAT3DENTRY(initAT3DGetInfo,FxBool,(VG96Info *info))
 
     GDBG_INFO((80, "%s:\n", FN_NAME));
 
-    info->vgaChip = 0;
+    info->vgaChip = 1; /* Alliance AT3D, as defined by VG96Info. */
     info->vg96Rev = 0;
 
 #ifdef __DOS32__

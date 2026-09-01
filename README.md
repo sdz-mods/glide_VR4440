@@ -10,6 +10,7 @@ The driver:
 - addresses each TREX independently through the SST-96 chip-select mechanism;
 - routes texture uploads through the shared Rush texture aperture;
 - configures downstream TMU0 to accept and combine the TMU1 texel stream;
+- supports AT25/AT3D hardware gamma correction for Glide output;
 - retains explicit one-TMU and reduced-memory compatibility modes; and
 - builds a Win98-compatible `GLIDE2X.DLL` with the MinGW cross-toolchain.
 
@@ -53,6 +54,34 @@ set SST96_TMUMEM_SIZE=2
 game.exe
 ```
 
+## Gamma Correction
+
+Set a single gamma value for all color channels:
+
+```bat
+set SST96_GAMMA=1.7
+```
+
+Or control the channels independently:
+
+```bat
+set SST96_RGAMMA=1.7
+set SST96_GGAMMA=1.7
+set SST96_BGAMMA=1.7
+```
+
+Values greater than `0` and up to `16` are accepted. Gamma `1.0` is linear;
+values above `1.0` brighten midtones and values below `1.0` darken them.
+`SST96_GAMMA` overrides the three per-channel variables.
+
+The driver programs the Alliance primary DAC lookup table and enables it for
+both desktop and Rush video-window output. The ProMotion Video chroma
+correction switch can remain off. The original palette and correction state
+are restored when Glide closes.
+
+The Voodoo1 names `SST_GAMMA`, `SST_RGAMMA`, `SST_GGAMMA`, and `SST_BGAMMA`
+are accepted as lower-priority compatibility aliases.
+
 ## Diagnostics And Tuning
 
 These variables are intended for hardware development. Leave them unset for
@@ -63,6 +92,8 @@ normal operation. Integer values accept decimal or `0x` hexadecimal notation.
 | `SST96_TRACE_INIT=1` | Writes initialization tracing to `rush_init96.log`. |
 | `SST96_TRACE_FILE=path` | Changes the initialization trace filename. |
 | `SST96_TRACE_TMU_STATE=1` | Writes TMU state tracing to `rush_tmu_state.log`. |
+| `SST96_GAMMA_TRACE=1` | Logs gamma requests, DAC control state, LUT readback, and restoration. |
+| `SST96_GAMMA_TRACE_FILE=path` | Changes the gamma trace filename from `rush_gamma.log`. |
 | `SST96_GRXCLK=25..100` | Sets the Rush clock in integer MHz steps. |
 | `SST96_CLOCK_TRACE=1` | Logs requested/actual clock, PLL values, readback, and restoration. |
 | `SST96_CLOCK_TRACE_FILE=path` | Changes the clock trace filename from `rush_clock.log`. |

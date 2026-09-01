@@ -43,5 +43,11 @@ INITAT3DENTRY(initAT3DUseTiles, int, (InitRegisterDesc *rd,
         FxU32 strideInBytes, FxU32 width, FxU32 height)); 
 #endif
 INITAT3DENTRY(initAT3DGetInfo, FxBool,(VG96Info *info));
+INITAT3DENTRY(initAT3DGammaRGB, FxBool,
+              (InitRegisterDesc *rd, double r, double g, double b));
+INITAT3DENTRY(initAT3DGammaTable, FxBool,
+              (InitRegisterDesc *rd, FxU32 nentries,
+               FxU32 *r, FxU32 *g, FxU32 *b));
+INITAT3DENTRY(initAT3DRestoreGamma, void, (InitRegisterDesc *rd));
 #endif /* __INITAT3D_H__ */
 
